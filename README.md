@@ -4,17 +4,20 @@ Gearbox is a Claude Code plugin that automatically routes subagent delegations t
 
 ## Install
 
+**In your terminal:**
+
 ```bash
-# 1. Add from marketplace
-/plugin marketplace add Adityaraj0421/gearbox
-
-# 2. Install into Claude Code
-/plugin install gearbox@gearbox
-
-# 3. Restart your Claude Code session
+claude
 ```
 
-The SessionStart hook activates routing automatically on every session start — no per-project setup required.
+**Inside the Claude Code session** (slash commands — these do not work in your shell):
+
+```text
+/plugin marketplace add Adityaraj0421/gearbox
+/plugin install gearbox@gearbox
+```
+
+Restart the session. The SessionStart hook activates routing automatically on every session start — no per-project setup required.
 
 **Recommended:** set your session model to sonnet (`/model sonnet`) — this is the orchestrator tier. Gearbox controls subagent models; it does not override your main session model.
 
