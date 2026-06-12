@@ -1,6 +1,8 @@
 {
   "name": "gearbox",
-  "owner": "Adityaraj0421",
+  "owner": {
+    "name": "Aditya Raj"
+  },
   "plugins": [
     {
       "source": "./"
