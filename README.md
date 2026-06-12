@@ -11,11 +11,10 @@ Gearbox is a Claude Code plugin that automatically routes subagent delegations t
 # 2. Install into Claude Code
 /plugin install gearbox@gearbox
 
-# 3. Activate in each project (run inside your repo)
-/gearbox:init
+# 3. Restart your Claude Code session
 ```
 
-`/gearbox:init` copies the routing policy to `.claude/routing.md` and imports it into `CLAUDE.md`. Restart your Claude Code session after running it.
+The SessionStart hook activates routing automatically on every session start — no per-project setup required.
 
 **Recommended:** set your session model to sonnet (`/model sonnet`) — this is the orchestrator tier. Gearbox controls subagent models; it does not override your main session model.
 
@@ -41,12 +40,17 @@ Verdict outcomes:
 - **REJECT** — gaming pattern found or out-of-scope file touched; sends back to same tier once, then escalates
 - **SKIPPED** — implementer escalated with no file changes; escalation ladder handles it
 
+## Customizing the routing policy (optional)
+
+Run `/gearbox:init` inside a project to create a local copy of the routing policy at `.claude/routing.md`. The SessionStart hook will inject your local copy instead of the plugin default. Edit `.claude/routing.md` to adjust tier thresholds, add project-specific hard floors, or extend the escalation rules.
+
 ## Known limitations
 
-- **Dirty-file blind spot (mitigated):** The verifier now requires a BASELINE snapshot, but the orchestrator must remember to capture and pass it before each T1/T2 delegation. If the orchestrator skips this, the verifier falls back to full-diff scope-checking, which can false-reject in repos with pre-existing uncommitted changes.
+- **Dirty-file blind spot (mitigated):** The verifier requires a BASELINE snapshot, but the orchestrator must remember to capture and pass it before each T1/T2 delegation. If omitted, the verifier falls back to full-diff scope-checking, which can false-reject in repos with pre-existing uncommitted changes.
 - **Agents load on session start:** If you add or update agent files, restart your Claude Code session before the new definitions take effect.
 - **Effort propagation untested:** The `ultrathink` directive in T2 prompts has not been verified to propagate to subagents across all surfaces. Treat it as experimental.
-- **SessionStart hook injection:** The routing policy is injected via a SessionStart hook. Some Claude Code surfaces may handle hook output differently — if routing rules seem absent, run `/gearbox:init` and verify `@.claude/routing.md` is the first line of your `CLAUDE.md`.
+- **SessionStart hook injection:** The routing policy is injected via a SessionStart hook. Some Claude Code surfaces may handle hook output differently — if routing rules seem absent, verify the hook ran or run `/gearbox:init` to create a project-local copy.
+- **Routing policy context cost:** The routing policy is injected each session start (~2.5KB context cost).
 
 ## Telemetry
 
