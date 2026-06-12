@@ -1,0 +1,10 @@
+{
+  "name": "gearbox",
+  "version": "0.1.0",
+  "description": "Automatic model+effort routing for Claude Code: tiered subagents, escalation ladder, independent verifier, JSONL routing telemetry",
+  "author": {
+    "name": "Aditya Raj"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/Adityaraj0421/gearbox"
+}

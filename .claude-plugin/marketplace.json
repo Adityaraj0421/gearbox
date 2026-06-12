@@ -1,0 +1,9 @@
+{
+  "name": "gearbox",
+  "owner": "Adityaraj0421",
+  "plugins": [
+    {
+      "source": "./"
+    }
+  ]
+}

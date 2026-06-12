@@ -1,0 +1,23 @@
+{
+  "PostToolUse": [
+    {
+      "matcher": "Task",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/log-routing.py\""
+        }
+      ]
+    }
+  ],
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/inject-routing.py\""
+        }
+      ]
+    }
+  ]
+}
