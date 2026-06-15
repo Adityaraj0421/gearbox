@@ -62,6 +62,11 @@ work to a cheap model twice.
      or 'VERDICT: REJECT' anywhere in it, not only line 1.
    - Log verify=approve|reject|skipped in the [gearbox] summary line.
 
+10. **Scout results are recon, not ground truth.** A count or answer from a scout
+    that gates a mutation or destructive action must be verified by the orchestrator
+    directly (re-run the command / re-read the file). A surprising or empty scout
+    result gets a second look, not a pass.
+
 ## Effort (experimental)
 
 For T2 delegations where the problem is genuinely hard (score 5), include the
