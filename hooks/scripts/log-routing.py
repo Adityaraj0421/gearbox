@@ -10,8 +10,12 @@ This log is the seed data for a future learned router (contextual bandit over
 {model x tier} with reward = success/cost). Verify the exact hook input schema
 against your Claude Code version's hooks docs if fields come back empty.
 
-WARNING: tool_response schema is not pinned across Claude Code versions. All
-extraction from it is defensive and best-effort — missing values become null.
+tool_response schema (empirically confirmed 2026-06 across 15 Task dispatches,
+subagent models claude-haiku-4-5 / claude-sonnet-4-6):
+  Top-level keys: totalTokens, totalToolUseCount, totalDurationMs,
+                  plus a nested "usage" dict (input_tokens, output_tokens, …).
+  No cost field exists — cost is always estimated from token counts.
+Legacy key names are retained as cross-version fallback.
 """
 import json
 import re
@@ -59,6 +63,11 @@ def _first(d: dict, *keys):
     return None
 
 
+def _coalesce(a, b):
+    """Return a if it is not None, else b. Unlike `a or b`, preserves 0/False."""
+    return a if a is not None else b
+
+
 def _int_or_none(v):
     try:
         return int(v)
@@ -92,21 +101,25 @@ def _extract_metrics(tool_response) -> dict:
             # look for a nested usage sub-dict first
             usage = tr.get("usage") if isinstance(tr.get("usage"), dict) else {}
 
-            raw_tokens = _first(
-                tr, "total_tokens", "totalTokens", "subagent_tokens", "tokens"
-            ) or _first(usage, "total_tokens", "totalTokens", "subagent_tokens", "tokens")
+            raw_tokens = _coalesce(
+                _first(tr, "totalTokens", "total_tokens", "subagent_tokens", "tokens"),
+                _first(usage, "totalTokens", "total_tokens", "subagent_tokens", "tokens"),
+            )
 
-            raw_turns = _first(
-                tr, "num_turns", "tool_uses", "toolUses", "turns"
-            ) or _first(usage, "num_turns", "tool_uses", "toolUses", "turns")
+            raw_turns = _coalesce(
+                _first(tr, "totalToolUseCount", "num_turns", "tool_uses", "toolUses", "turns"),
+                _first(usage, "totalToolUseCount", "num_turns", "tool_uses", "toolUses", "turns"),
+            )
 
-            raw_duration = _first(
-                tr, "duration_ms", "durationMs", "duration"
-            ) or _first(usage, "duration_ms", "durationMs", "duration")
+            raw_duration = _coalesce(
+                _first(tr, "totalDurationMs", "duration_ms", "durationMs", "duration"),
+                _first(usage, "totalDurationMs", "duration_ms", "durationMs", "duration"),
+            )
 
-            raw_cost = _first(
-                tr, "total_cost_usd", "cost_usd", "costUSD", "total_cost"
-            ) or _first(usage, "total_cost_usd", "cost_usd", "costUSD", "total_cost")
+            raw_cost = _coalesce(
+                _first(tr, "total_cost_usd", "cost_usd", "costUSD", "total_cost"),
+                _first(usage, "total_cost_usd", "cost_usd", "costUSD", "total_cost"),
+            )
 
             total_tokens = _int_or_none(raw_tokens)
             num_turns = _int_or_none(raw_turns)
@@ -245,6 +258,33 @@ if __name__ == "__main__":
         assert r2["duration_ms"] == 2000, f"expected 2000, got {r2['duration_ms']}"
         assert r2["cost_estimated"] is True, "expected cost_estimated=True"
         assert r2["cost_usd"] is not None and r2["cost_usd"] > 0, "expected cost_usd > 0"
+
+        # Real captured shape (15 dispatches, 2026-06, claude-haiku-4-5 / claude-sonnet-4-6)
+        real_shape = {
+            "session_id": "s3",
+            "tool_name": "Agent",
+            "tool_input": {
+                "subagent_type": "gearbox:scout",
+                "model": "claude-haiku-4-5",
+                "prompt": "probe",
+            },
+            "cwd": "/tmp",
+            "tool_response": {
+                "status": "completed",
+                "agentType": "gearbox:scout",
+                "resolvedModel": "claude-haiku-4-5",
+                "totalTokens": 6294,
+                "totalToolUseCount": 0,
+                "totalDurationMs": 1275,
+                "usage": {"input_tokens": 3, "output_tokens": 10},
+            },
+        }
+        r3 = build_record(real_shape)
+        assert r3["total_tokens"] == 6294, f"expected 6294, got {r3['total_tokens']}"
+        assert r3["num_turns"] == 0, f"expected 0, got {r3['num_turns']}"  # falsy-coalescing guard
+        assert r3["duration_ms"] == 1275, f"expected 1275, got {r3['duration_ms']}"
+        assert r3["cost_estimated"] is True, "expected cost_estimated=True"
+        assert r3["cost_usd"] is not None and r3["cost_usd"] > 0, "expected cost_usd > 0"
 
         print("selfcheck OK")
         sys.exit(0)
