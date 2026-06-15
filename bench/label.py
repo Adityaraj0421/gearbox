@@ -19,11 +19,21 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 def _record_id(record: dict) -> str:
-    """Stable sha1 key from the fields that identify a unique delegation."""
-    ts = record.get("ts", "")
-    session_id = record.get("session_id", "")
-    prompt_head = record.get("prompt_head", "")
-    raw = f"{ts}|{session_id}|{prompt_head}"
+    """Stable sha1 key from the fields that identify a unique delegation.
+
+    Includes the delegation discriminators (tool, agent, model) so two
+    distinct delegations sharing a timestamp + session + prompt_head don't
+    collide and silently drop one another during resumable dedup.
+    """
+    parts = [
+        record.get("ts", ""),
+        record.get("session_id", ""),
+        record.get("tool_name", ""),
+        record.get("subagent_type", ""),
+        record.get("model", ""),
+        record.get("prompt_head", ""),
+    ]
+    raw = "|".join(str(p) for p in parts)
     return hashlib.sha1(raw.encode()).hexdigest()
 
 
@@ -120,6 +130,10 @@ def _run_selfcheck() -> None:
     # id differs for different prompt_head
     rec_alt = dict(rec, prompt_head="Something completely different")
     assert _record_id(rec) != _record_id(rec_alt), "different prompt_head must differ"
+
+    # id differs when only a delegation discriminator changes (collision guard)
+    rec_disc = dict(rec, subagent_type="scout")
+    assert _record_id(rec) != _record_id(rec_disc), "different subagent_type must differ"
 
     # load_labeled_keys round-trip via tempfile
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False, encoding="utf-8") as f:
