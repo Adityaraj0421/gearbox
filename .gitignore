@@ -5,5 +5,9 @@ __pycache__/
 # Gearbox per-project telemetry — the plugin writes this to cwd/.claude/
 .claude/gearbox-log.jsonl
 
+# Labeled training data produced by bench/label.py — may contain prompt_head
+# text from delegation prompts; kept out of version control for privacy.
+bench/training-data.jsonl
+
 # OS cruft
 .DS_Store

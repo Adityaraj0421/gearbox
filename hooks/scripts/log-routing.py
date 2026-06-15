@@ -47,6 +47,30 @@ _DEFAULT_RATE = _BLENDED_RATES["sonnet"]
 _USAGE_BLOCK_RE = re.compile(r"<usage>(.*?)</usage>", re.DOTALL)
 _USAGE_LINE_RE = re.compile(r"(\w+):\s*(\d+(?:\.\d+)?)")
 
+# ponytail: regex best-effort secret scrubber — not a full secret scanner;
+# misses obfuscated/encoded credentials and multi-line values split across the
+# 200-char truncation boundary.  Good enough to stop accidental paste-in leaks.
+_PEM_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+    re.DOTALL,
+)
+_AWS_KEY_RE = re.compile(r"AKIA[0-9A-Z]{16}")
+_KV_SECRET_RE = re.compile(
+    r"(?i)(?P<key>(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|bearer|authorization))"
+    r"(?P<sep>\s*[:=]\s*)(?P<val>[^\s,;\"\']+)",
+)
+# Hex or base64-ish opaque token of >= 32 chars (no whitespace, mostly alphanum/+/=/-/_)
+_LONG_TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_\-]{32,}")
+
+
+def _scrub_secrets(text: str) -> str:
+    """Best-effort redaction of common credential shapes. Returns scrubbed text."""
+    text = _PEM_RE.sub("[REDACTED]", text)
+    text = _AWS_KEY_RE.sub("[REDACTED]", text)
+    text = _KV_SECRET_RE.sub(lambda m: m.group("key") + m.group("sep") + "[REDACTED]", text)
+    text = _LONG_TOKEN_RE.sub("[REDACTED]", text)
+    return text
+
 
 def _model_rate(model: str) -> float:
     m = (model or "").lower()
@@ -268,7 +292,7 @@ def build_record(event: dict) -> dict:
         "model_source": routing["model_source"],
         "tier": routing["tier"],
         "verdict": routing["verdict"],
-        "prompt_head": (tool_input.get("prompt", "") or "")[:200],
+        "prompt_head": _scrub_secrets((tool_input.get("prompt", "") or ""))[:200],
         "cwd": event.get("cwd", ""),
         "total_tokens": metrics["total_tokens"],
         "num_turns": metrics["num_turns"],
@@ -396,6 +420,53 @@ if __name__ == "__main__":
         assert rr6["model"] == "(not passed)", f"expected (not passed), got {rr6['model']}"
         assert rr6["model_source"] == "absent", f"expected absent, got {rr6['model_source']}"
         assert rr6["tier"] is None, f"expected None tier, got {rr6['tier']}"
+
+        # --- _scrub_secrets: AWS access key id is redacted ---
+        aws_text = "Use this key: AKIAIOSFODNN7EXAMPLE to authenticate"
+        scrubbed_aws = _scrub_secrets(aws_text)
+        assert "[REDACTED]" in scrubbed_aws, f"AWS key not redacted: {scrubbed_aws!r}"
+        assert "AKIAIOSFODNN7EXAMPLE" not in scrubbed_aws, f"raw AWS key still present: {scrubbed_aws!r}"
+
+        # --- _scrub_secrets: key=value credential pair is redacted ---
+        kv_text = "API_KEY=sk-abc123verylongsecrettoken99999999 and other stuff"
+        scrubbed_kv = _scrub_secrets(kv_text)
+        assert "[REDACTED]" in scrubbed_kv, f"kv secret not redacted: {scrubbed_kv!r}"
+        assert "sk-abc123verylongsecrettoken99999999" not in scrubbed_kv, f"raw kv value still present: {scrubbed_kv!r}"
+        assert "API_KEY" in scrubbed_kv, f"key name must be preserved: {scrubbed_kv!r}"
+
+        # --- _scrub_secrets: long hex token is redacted ---
+        hex_text = "token: 0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d and done"
+        scrubbed_hex = _scrub_secrets(hex_text)
+        assert "[REDACTED]" in scrubbed_hex, f"long hex not redacted: {scrubbed_hex!r}"
+        assert "0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d" not in scrubbed_hex, f"raw hex still present: {scrubbed_hex!r}"
+
+        # --- _scrub_secrets: PEM private-key block is redacted (real footer, no space) ---
+        pem_text = "key:\n-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEAabc\n-----END RSA PRIVATE KEY-----\ndone"
+        scrubbed_pem = _scrub_secrets(pem_text)
+        assert "[REDACTED]" in scrubbed_pem, f"PEM block not redacted: {scrubbed_pem!r}"
+        assert "MIIEpAIBAAKCAQEAabc" not in scrubbed_pem, f"raw PEM body still present: {scrubbed_pem!r}"
+
+        # --- _scrub_secrets: ordinary prose is left unchanged ---
+        prose = "Refactor the auth module"
+        assert _scrub_secrets(prose) == prose, f"ordinary prose must not be changed: {_scrub_secrets(prose)!r}"
+
+        # --- build_record: prompt_head is scrubbed before storage ---
+        event_secret = {
+            "session_id": "test-secret",
+            "tool_name": "Task",
+            "tool_input": {
+                "subagent_type": "builder",
+                "model": "claude-sonnet",
+                "prompt": "Use AWS key AKIAIOSFODNN7EXAMPLE for this task",
+            },
+            "cwd": "/tmp",
+            "tool_response": {"totalTokens": 100, "totalToolUseCount": 1, "totalDurationMs": 500},
+        }
+        r_secret = build_record(event_secret)
+        assert "AKIAIOSFODNN7EXAMPLE" not in r_secret["prompt_head"], \
+            f"raw AWS key must not appear in prompt_head: {r_secret['prompt_head']!r}"
+        assert "[REDACTED]" in r_secret["prompt_head"], \
+            f"prompt_head must contain [REDACTED]: {r_secret['prompt_head']!r}"
 
         # Split-usage fallback: no aggregate token field, only input/output → summed
         split_shape = {
