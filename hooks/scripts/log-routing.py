@@ -23,6 +23,18 @@ import sys
 import time
 from pathlib import Path
 
+# Mirrors routing/routing.md tier assignments. Keyed by bare agent name
+# (no "gearbox:" prefix). Used to derive model/tier when not explicitly passed.
+_AGENT_ROUTING: dict = {
+    "scout":    {"tier": "T0", "model": "haiku"},
+    "grunt":    {"tier": "T0", "model": "haiku"},
+    "verifier": {"tier": "T0", "model": "haiku"},
+    "builder":  {"tier": "T1", "model": "sonnet"},
+    "architect": {"tier": "T2", "model": "opus"},
+}
+
+_VERDICT_RE = re.compile(r"VERDICT:\s*(APPROVE|REJECT)", re.IGNORECASE)
+
 # ponytail: approximate blended USD-per-million-tokens rates; refine per
 # input/output token split if the hook ever exposes it.
 _BLENDED_RATES = {
@@ -168,12 +180,66 @@ def _extract_metrics(tool_response) -> dict:
     }
 
 
+def _tool_response_text(tool_response) -> str:
+    """Return a flat text blob from tool_response for pattern matching."""
+    if isinstance(tool_response, str):
+        return tool_response
+    if isinstance(tool_response, dict):
+        parts = []
+        for v in tool_response.values():
+            if isinstance(v, str):
+                parts.append(v)
+        return " ".join(parts)
+    return ""
+
+
+def resolve_routing(subagent_type: str, tool_input: dict, tool_response) -> dict:
+    """Resolve model, model_source, tier, and verdict for a delegation.
+
+    Pure function — no I/O. Returns a dict with keys:
+      model, model_source, tier, verdict
+    """
+    # Strip optional "gearbox:" namespace prefix.
+    bare = (subagent_type or "").removeprefix("gearbox:")
+
+    mapping = _AGENT_ROUTING.get(bare)
+
+    # --- model + model_source ---
+    raw_model = (tool_input or {}).get("model") or ""
+    if raw_model:
+        model = raw_model
+        model_source = "passed"
+    elif mapping:
+        model = mapping["model"]
+        model_source = "derived"
+    else:
+        model = "(not passed)"
+        model_source = "absent"
+
+    # --- tier ---
+    tier = mapping["tier"] if mapping else None
+
+    # --- verdict (verifier only) ---
+    verdict = None
+    if bare == "verifier":
+        text = _tool_response_text(tool_response)
+        m = _VERDICT_RE.search(text)
+        if m:
+            verdict = m.group(1).lower()
+
+    return {"model": model, "model_source": model_source, "tier": tier, "verdict": verdict}
+
+
 def build_record(event: dict) -> dict:
     """Build the log record from a hook event dict. Pure function."""
     tool_input = event.get("tool_input", {}) or {}
-    model = tool_input.get("model", "(not passed)") or "(not passed)"
+    tool_response = event.get("tool_response")
+    subagent_type = tool_input.get("subagent_type", "")
 
-    metrics = _extract_metrics(event.get("tool_response"))
+    routing = resolve_routing(subagent_type, tool_input, tool_response)
+    model = routing["model"]
+
+    metrics = _extract_metrics(tool_response)
 
     # Estimate cost from tokens if no direct cost was reported.
     if metrics["cost_usd"] is None and metrics["total_tokens"] is not None:
@@ -185,8 +251,11 @@ def build_record(event: dict) -> dict:
         "ts": int(time.time()),
         "session_id": event.get("session_id", ""),
         "tool_name": event.get("tool_name", ""),
-        "subagent_type": tool_input.get("subagent_type", ""),
+        "subagent_type": subagent_type,
         "model": model,
+        "model_source": routing["model_source"],
+        "tier": routing["tier"],
+        "verdict": routing["verdict"],
         "prompt_head": (tool_input.get("prompt", "") or "")[:200],
         "cwd": event.get("cwd", ""),
         "total_tokens": metrics["total_tokens"],
@@ -285,6 +354,36 @@ if __name__ == "__main__":
         assert r3["duration_ms"] == 1275, f"expected 1275, got {r3['duration_ms']}"
         assert r3["cost_estimated"] is True, "expected cost_estimated=True"
         assert r3["cost_usd"] is not None and r3["cost_usd"] > 0, "expected cost_usd > 0"
+
+        # --- resolve_routing: gearbox:builder, no model param → derived ---
+        rr1 = resolve_routing("gearbox:builder", {}, None)
+        assert rr1["model"] == "sonnet", f"expected sonnet, got {rr1['model']}"
+        assert rr1["model_source"] == "derived", f"expected derived, got {rr1['model_source']}"
+        assert rr1["tier"] == "T1", f"expected T1, got {rr1['tier']}"
+        assert rr1["verdict"] is None, f"expected None verdict, got {rr1['verdict']}"
+
+        # --- resolve_routing: model param present → passed ---
+        rr2 = resolve_routing("gearbox:builder", {"model": "haiku"}, None)
+        assert rr2["model"] == "haiku", f"expected haiku, got {rr2['model']}"
+        assert rr2["model_source"] == "passed", f"expected passed, got {rr2['model_source']}"
+
+        # --- resolve_routing: verifier with VERDICT: REJECT ---
+        rr3 = resolve_routing("verifier", {}, "Work done. VERDICT: REJECT — missing tests.")
+        assert rr3["verdict"] == "reject", f"expected reject, got {rr3['verdict']}"
+
+        # --- resolve_routing: verifier with VERDICT: APPROVE ---
+        rr4 = resolve_routing("gearbox:verifier", {}, {"output": "All checks pass. VERDICT: APPROVE"})
+        assert rr4["verdict"] == "approve", f"expected approve, got {rr4['verdict']}"
+
+        # --- resolve_routing: verifier with no verdict ---
+        rr5 = resolve_routing("verifier", {}, "Looks good but no explicit verdict here.")
+        assert rr5["verdict"] is None, f"expected None, got {rr5['verdict']}"
+
+        # --- resolve_routing: unknown agent, no param → absent ---
+        rr6 = resolve_routing("general-purpose", {}, None)
+        assert rr6["model"] == "(not passed)", f"expected (not passed), got {rr6['model']}"
+        assert rr6["model_source"] == "absent", f"expected absent, got {rr6['model_source']}"
+        assert rr6["tier"] is None, f"expected None tier, got {rr6['tier']}"
 
         print("selfcheck OK")
         sys.exit(0)
