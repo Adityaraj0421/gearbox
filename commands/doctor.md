@@ -184,12 +184,30 @@ print(d.get('version','unknown'))
 "
 ```
 
-**Step B** — fetch latest from GitHub (5-second timeout; skip on failure):
+**Step B** — fetch the latest version from the plugin's own source repo. The repo
+is read from the manifest's `repository` field, so a fork checks itself rather than
+upstream (5-second timeout; skip on failure):
 
 ```bash
-curl -s --max-time 5 "https://raw.githubusercontent.com/Adityaraj0421/gearbox/main/.claude-plugin/plugin.json" \
-  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('version','unknown'))" \
-  2>/dev/null || echo "NETWORK_FAIL"
+python3 - <<'PY'
+import json, os, pathlib, re, urllib.request
+root = os.environ.get('CLAUDE_PLUGIN_ROOT', '')
+repo = ''
+try:
+    u = json.loads((pathlib.Path(root) / '.claude-plugin' / 'plugin.json').read_text()).get('repository', '')
+    m = re.search(r'github\.com[:/]+([^/]+/[^/]+?)(?:\.git)?/?$', u)
+    repo = m.group(1) if m else ''
+except Exception:
+    pass
+if not repo:
+    repo = 'Adityaraj0421/gearbox'  # fallback if manifest lacks a repository
+url = f'https://raw.githubusercontent.com/{repo}/main/.claude-plugin/plugin.json'
+try:
+    with urllib.request.urlopen(url, timeout=5) as r:
+        print(json.loads(r.read().decode('utf-8')).get('version', 'unknown'))
+except Exception:
+    print('NETWORK_FAIL')
+PY
 ```
 
 Evaluate:
