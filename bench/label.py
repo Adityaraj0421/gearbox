@@ -21,9 +21,11 @@ from pathlib import Path
 def _record_id(record: dict) -> str:
     """Stable sha1 key from the fields that identify a unique delegation.
 
-    Includes the delegation discriminators (tool, agent, model) so two
-    distinct delegations sharing a timestamp + session + prompt_head don't
-    collide and silently drop one another during resumable dedup.
+    Includes the delegation discriminators (tool, agent, model) and the
+    per-process uid so two genuinely-parallel dispatches of the same
+    agent+model+prompt within the same 1-second ts don't collide and
+    silently drop one another during resumable dedup.  Records without a
+    uid (pre-G2 log lines) fall back to empty string for backward compat.
     """
     parts = [
         record.get("ts", ""),
@@ -32,6 +34,7 @@ def _record_id(record: dict) -> str:
         record.get("subagent_type", ""),
         record.get("model", ""),
         record.get("prompt_head", ""),
+        record.get("uid", ""),
     ]
     raw = "|".join(str(p) for p in parts)
     return hashlib.sha1(raw.encode()).hexdigest()
@@ -134,6 +137,16 @@ def _run_selfcheck() -> None:
     # id differs when only a delegation discriminator changes (collision guard)
     rec_disc = dict(rec, subagent_type="scout")
     assert _record_id(rec) != _record_id(rec_disc), "different subagent_type must differ"
+
+    # uid collision guard: same content but different uid → different id
+    rec_uid_a = dict(rec, uid="1234-100000")
+    rec_uid_b = dict(rec, uid="1234-100001")
+    assert _record_id(rec_uid_a) != _record_id(rec_uid_b), \
+        "records with different uid must get different ids"
+
+    # uid dedup: same uid → same id (resumable dedup still works)
+    assert _record_id(rec_uid_a) == _record_id(rec_uid_a), \
+        "records with same uid must produce stable id"
 
     # load_labeled_keys round-trip via tempfile
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False, encoding="utf-8") as f:
