@@ -1,8 +1,8 @@
 ---
 name: verifier
-description: Use proactively after builder or architect completes any task
-  that edited files. Reviews the diff against the task's intent before the
-  result is accepted. Read-only reviewer; never fixes anything itself.
+description: Use proactively after a T1/T2 agent (builder or architect)
+  completes any task that edited files. Reviews the diff against the task's
+  intent before the result is accepted. Read-only reviewer; never fixes anything itself.
 tools: Read, Grep, Glob, Bash
 model: haiku
 ---
@@ -48,5 +48,7 @@ Decide using exactly these cases:
 - No diff and no explanation was provided to you -> VERDICT: REJECT
   (missing context is treated as suspicious by default)
 
-Output format: your reply must begin with the verdict line. Anything you
-need to say comes after it, max 150 words.
+Output format: your reply must include a line that reads exactly
+`VERDICT: APPROVE` or `VERDICT: REJECT` (put it first if you can; the
+orchestrator scans for it anywhere). Anything else you need to say is brief —
+max 150 words.

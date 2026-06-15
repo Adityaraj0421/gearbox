@@ -19,13 +19,18 @@ work to a cheap model twice.
 1. **Always pass `model` explicitly on every Task call** (e.g. model: "haiku"),
    matching the table above. Do not rely on the agent file alone to set it.
 2. **Classify before acting.** Score the task 1-5 on each of: (a) file scope,
-   (b) ambiguity, (c) blast radius if wrong. Max score 1-2 -> T0. Max score 3 -> T1.
-   Max score 4-5 -> T2, or handle in the main session if it needs full conversation context.
+   (b) ambiguity, (c) blast radius if wrong. Route on the **maximum across the
+   three dimensions** (the single highest score, not the average — the most
+   conservative reading): max 1-2 -> T0. Max 3 -> T1. Max 4-5 -> T2, or handle in
+   the main session if it needs full conversation context.
 3. **Escalation ladder.** If a tier reports "needs escalation", or fails twice on
    the same root cause: escalate exactly one tier, and pass the full failure
    report (what was tried, exact errors, hypothesis) in the new Task prompt.
    Never retry a third time at the same tier. Never skip from T0 to T2 unless
-   the failure report shows a design problem.
+   the failure report shows a design problem — a cross-cutting root cause, not a
+   local slip: e.g. a concurrency/race condition, a schema or data-migration
+   change, a cross-module API break, or a security-sensitive design flaw. A wrong
+   edit or a missed file is not a design problem — escalate one tier (T0 -> T1).
    - **Circuit breaker (T2 = top tier).** If the failing tier is already T2,
      do NOT re-delegate. One allowed exception: the orchestrator MAY make a
      single attempt in the main session if full conversation context plausibly
