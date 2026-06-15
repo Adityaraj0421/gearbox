@@ -26,6 +26,12 @@ work to a cheap model twice.
    report (what was tried, exact errors, hypothesis) in the new Task prompt.
    Never retry a third time at the same tier. Never skip from T0 to T2 unless
    the failure report shows a design problem.
+   - **Circuit breaker (T2 = top tier).** If the failing tier is already T2,
+     do NOT re-delegate. One allowed exception: the orchestrator MAY make a
+     single attempt in the main session if full conversation context plausibly
+     adds something the isolated subagent lacked. If that also fails — STOP.
+     Surface to the human: every tier attempted, what each tried, exact errors,
+     and the current hypothesis. Ask for direction. No further blind delegation.
 4. **Hard floors.** Anything touching auth, payments, migrations, concurrency,
    or secrets starts at T1 minimum. Production-breaking risk starts at T2.
 5. **Don't over-delegate.** Single-file questions you can answer from context,
