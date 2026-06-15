@@ -1,0 +1,9 @@
+# Python bytecode (selfchecks, hook & bench scripts)
+__pycache__/
+*.pyc
+
+# Gearbox per-project telemetry — the plugin writes this to cwd/.claude/
+.claude/gearbox-log.jsonl
+
+# OS cruft
+.DS_Store
