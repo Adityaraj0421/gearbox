@@ -105,6 +105,18 @@ def _extract_metrics(tool_response) -> dict:
                 _first(tr, "totalTokens", "total_tokens", "subagent_tokens", "tokens"),
                 _first(usage, "totalTokens", "total_tokens", "subagent_tokens", "tokens"),
             )
+            if raw_tokens is None:
+                # No aggregate token field; fall back to summing split usage.
+                in_tok = _int_or_none(_coalesce(
+                    _first(tr, "input_tokens", "inputTokens"),
+                    _first(usage, "input_tokens", "inputTokens"),
+                ))
+                out_tok = _int_or_none(_coalesce(
+                    _first(tr, "output_tokens", "outputTokens"),
+                    _first(usage, "output_tokens", "outputTokens"),
+                ))
+                if in_tok is not None and out_tok is not None:
+                    raw_tokens = in_tok + out_tok
 
             raw_turns = _coalesce(
                 _first(tr, "totalToolUseCount", "num_turns", "tool_uses", "toolUses", "turns"),
@@ -285,6 +297,24 @@ if __name__ == "__main__":
         assert r3["duration_ms"] == 1275, f"expected 1275, got {r3['duration_ms']}"
         assert r3["cost_estimated"] is True, "expected cost_estimated=True"
         assert r3["cost_usd"] is not None and r3["cost_usd"] > 0, "expected cost_usd > 0"
+
+        # Split-usage fallback: no aggregate token field, only input/output → summed
+        split_shape = {
+            "session_id": "s4",
+            "tool_name": "Agent",
+            "tool_input": {
+                "subagent_type": "gearbox:scout",
+                "model": "claude-haiku-4-5",
+                "prompt": "probe",
+            },
+            "cwd": "/tmp",
+            "tool_response": {
+                "status": "completed",
+                "usage": {"input_tokens": 120, "output_tokens": 30},
+            },
+        }
+        r4 = build_record(split_shape)
+        assert r4["total_tokens"] == 150, f"expected 150, got {r4['total_tokens']}"
 
         print("selfcheck OK")
         sys.exit(0)
