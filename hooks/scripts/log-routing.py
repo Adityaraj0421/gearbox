@@ -13,8 +13,12 @@ against your Claude Code version's hooks docs if fields come back empty.
 tool_response schema (empirically confirmed 2026-06 across 15 Task dispatches,
 subagent models claude-haiku-4-5 / claude-sonnet-4-6):
   Top-level keys: totalTokens, totalToolUseCount, totalDurationMs,
-                  plus a nested "usage" dict (input_tokens, output_tokens, …).
-  No cost field exists — cost is always estimated from token counts.
+                  plus a nested "usage" dict with the full per-component token
+                  split: input_tokens, output_tokens, cache_read_input_tokens,
+                  cache_creation_input_tokens, and a cache_creation sub-dict
+                  with ephemeral_5m_input_tokens / ephemeral_1h_input_tokens.
+  Cost is computed exactly per-component when the split is present; falls back
+  to a blended per-model rate estimate only when the split is absent.
 """
 import json
 import os
@@ -37,14 +41,23 @@ _AGENT_ROUTING: dict = {
 
 _VERDICT_RE = re.compile(r"VERDICT:\s*(APPROVE|REJECT)", re.IGNORECASE)
 
-# ponytail: approximate blended USD-per-million-tokens rates, as of the 2026-06
-# rate card (empirically confirmed that month across 15 dispatches; see module
-# docstring). Re-pin the date and values when Anthropic pricing changes. Refine
-# per input/output token split if the hook ever exposes it.
+# Per-component USD-per-million-tokens rates, 2026-06 Anthropic rate card.
+# Re-pin date and values when pricing changes.
+# Keys: input, output, cache_read, cache_write_5m, cache_write_1h.
+_TOKEN_RATES: dict = {
+    "haiku":  {"input": 1.00, "output":  5.00, "cache_read": 0.10, "cache_write_5m": 1.25, "cache_write_1h":  2.00},
+    "sonnet": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write_5m": 3.75, "cache_write_1h":  6.00},
+    "opus":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write_5m": 6.25, "cache_write_1h": 10.00},
+}
+_DEFAULT_TOKEN_RATES = _TOKEN_RATES["sonnet"]
+
+# ponytail: rough blended USD-per-million-tokens fallback rates, 2026-06 rate
+# card. Used only when the per-component split is absent (degenerate/old payload).
+# Re-pin date and values when pricing changes.
 _BLENDED_RATES = {
-    "haiku": 0.8,
-    "sonnet": 9.0,
-    "opus": 45.0,
+    "haiku": 1.5,
+    "sonnet": 5.0,
+    "opus": 8.0,
 }
 _DEFAULT_RATE = _BLENDED_RATES["sonnet"]
 
@@ -81,6 +94,15 @@ def _model_rate(model: str) -> float:
     return _DEFAULT_RATE
 
 
+def _model_token_rates(model: str) -> dict:
+    """Return the per-component rate dict for model. Default: sonnet."""
+    m = (model or "").lower()
+    for key, rates in _TOKEN_RATES.items():
+        if key in m:
+            return rates
+    return _DEFAULT_TOKEN_RATES
+
+
 def _first(d: dict, *keys):
     """Return the value of the first key found in d, or None."""
     for k in keys:
@@ -114,10 +136,17 @@ def _extract_metrics(tool_response) -> dict:
     """Defensively extract usage metrics from tool_response.
 
     tool_response is always a dict (empirically confirmed across 15+ dispatches).
-    Returns a dict with keys: total_tokens, num_turns, duration_ms,
+    Returns a dict with keys: total_tokens, input_tokens, output_tokens,
+    cache_read_tokens, cache_creation_tokens, num_turns, duration_ms,
     cost_usd, cost_estimated.
     """
     total_tokens = None
+    input_tokens = None
+    output_tokens = None
+    cache_read_tokens = None
+    cache_creation_tokens = None
+    cc_5m = None
+    cc_1h = None
     num_turns = None
     duration_ms = None
     cost_usd = None
@@ -131,23 +160,45 @@ def _extract_metrics(tool_response) -> dict:
 
             # Empirically confirmed keys (2026-06, 15+ dispatches):
             #   aggregate: totalTokens / totalToolUseCount / totalDurationMs
-            #   split fallback: usage.input_tokens / usage.output_tokens
+            #   split: usage.input_tokens / usage.output_tokens /
+            #          usage.cache_read_input_tokens / usage.cache_creation_input_tokens
+            #          usage.cache_creation.ephemeral_5m_input_tokens
+            #          usage.cache_creation.ephemeral_1h_input_tokens
             raw_tokens = _first(tr, "totalTokens")
             if raw_tokens is None:
                 raw_tokens = _first(usage, "totalTokens")
+
+            # Extract the per-component token split from the usage sub-dict.
+            input_tokens = _int_or_none(_coalesce(
+                _first(usage, "input_tokens"),
+                _first(tr, "input_tokens"),
+            ))
+            output_tokens = _int_or_none(_coalesce(
+                _first(usage, "output_tokens"),
+                _first(tr, "output_tokens"),
+            ))
+            cache_read_tokens = _int_or_none(_first(usage, "cache_read_input_tokens"))
+            cache_creation_tokens = _int_or_none(_first(usage, "cache_creation_input_tokens"))
+
+            # Extract the 5m/1h cache-write sub-breakdown if present.
+            cc_sub = usage.get("cache_creation") if isinstance(usage.get("cache_creation"), dict) else None
+            cc_5m = _int_or_none(_first(cc_sub, "ephemeral_5m_input_tokens")) if cc_sub is not None else None
+            cc_1h = _int_or_none(_first(cc_sub, "ephemeral_1h_input_tokens")) if cc_sub is not None else None
+            # ponytail: if sub-breakdown absent but cache_creation_input_tokens present,
+            # bill the whole cache-creation amount at the 5m write rate (the common case).
+            if cc_5m is None and cc_1h is None and cache_creation_tokens is not None:
+                cc_5m = cache_creation_tokens
+
             if raw_tokens is None:
                 # No aggregate token field; fall back to summing split usage.
-                in_tok = _int_or_none(_coalesce(
-                    _first(usage, "input_tokens"),
-                    _first(tr, "input_tokens"),
-                ))
-                out_tok = _int_or_none(_coalesce(
-                    _first(usage, "output_tokens"),
-                    _first(tr, "output_tokens"),
-                ))
                 # Sum whichever sides are present; both absent → None (not 0).
-                if in_tok is not None or out_tok is not None:
-                    raw_tokens = (in_tok or 0) + (out_tok or 0)
+                if input_tokens is not None or output_tokens is not None:
+                    raw_tokens = (
+                        (input_tokens or 0)
+                        + (output_tokens or 0)
+                        + (cache_read_tokens or 0)
+                        + (cache_creation_tokens or 0)
+                    )
 
             raw_turns = _coalesce(
                 _first(tr, "totalToolUseCount"),
@@ -178,11 +229,46 @@ def _extract_metrics(tool_response) -> dict:
 
     return {
         "total_tokens": total_tokens,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+        # _cc_5m/_cc_1h: internal; used by _exact_cost; not written to the log record
+        "_cc_5m": cc_5m,
+        "_cc_1h": cc_1h,
         "num_turns": num_turns,
         "duration_ms": duration_ms,
         "cost_usd": cost_usd,
         "cost_estimated": cost_estimated,
     }
+
+
+def _exact_cost(metrics: dict, rates: dict) -> float | None:
+    """Compute exact cost from per-component token split and rates dict.
+
+    Returns cost in USD (rounded to 8 decimals), or None if no split component
+    is present at all.
+    """
+    # "split present" = at least one component key exists
+    in_t = metrics.get("input_tokens")
+    out_t = metrics.get("output_tokens")
+    cr_t = metrics.get("cache_read_tokens")
+    cc_t = metrics.get("cache_creation_tokens")
+    # cache_creation sub-breakdown (5m / 1h), passed through separately
+    cc_5m = metrics.get("_cc_5m")
+    cc_1h = metrics.get("_cc_1h")
+
+    if in_t is None and out_t is None and cr_t is None and cc_t is None:
+        return None
+
+    cost = (
+        (in_t or 0) * rates["input"]
+        + (out_t or 0) * rates["output"]
+        + (cr_t or 0) * rates["cache_read"]
+        + (cc_5m or 0) * rates["cache_write_5m"]
+        + (cc_1h or 0) * rates["cache_write_1h"]
+    ) / 1e6
+    return round(cost, 8)
 
 
 def _tool_response_text(tool_response) -> str:
@@ -246,11 +332,20 @@ def build_record(event: dict) -> dict:
 
     metrics = _extract_metrics(tool_response)
 
-    # Estimate cost from tokens if no direct cost was reported.
-    if metrics["cost_usd"] is None and metrics["total_tokens"] is not None:
-        rate = _model_rate(model)
-        metrics["cost_usd"] = round(metrics["total_tokens"] / 1e6 * rate, 8)
-        metrics["cost_estimated"] = True
+    # Cost precedence:
+    #   1. direct total_cost_usd reported → use it (already in metrics by _extract_metrics)
+    #   2. per-component token split present → exact cost via _TOKEN_RATES
+    #   3. only total_tokens present (no split) → blended estimate via _BLENDED_RATES
+    if metrics["cost_usd"] is None:
+        rates = _model_token_rates(model)
+        exact = _exact_cost(metrics, rates)
+        if exact is not None:
+            metrics["cost_usd"] = exact
+            metrics["cost_estimated"] = False
+        elif metrics["total_tokens"] is not None:
+            blended_rate = _model_rate(model)
+            metrics["cost_usd"] = round(metrics["total_tokens"] / 1e6 * blended_rate, 8)
+            metrics["cost_estimated"] = True
 
     return {
         "ts": int(time.time()),
@@ -265,6 +360,10 @@ def build_record(event: dict) -> dict:
         "prompt_head": _scrub_secrets((tool_input.get("prompt", "") or ""))[:200],
         "cwd": event.get("cwd", ""),
         "total_tokens": metrics["total_tokens"],
+        "input_tokens": metrics["input_tokens"],
+        "output_tokens": metrics["output_tokens"],
+        "cache_read_tokens": metrics["cache_read_tokens"],
+        "cache_creation_tokens": metrics["cache_creation_tokens"],
         "num_turns": metrics["num_turns"],
         "duration_ms": metrics["duration_ms"],
         "cost_usd": metrics["cost_usd"],
@@ -293,7 +392,19 @@ def main() -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--selfcheck":
-        # Real captured shape (15 dispatches, 2026-06, claude-haiku-4-5 / claude-sonnet-4-6)
+        # --- Real captured shape: full cache split (2026-06, claude-haiku-4-5) ---
+        # totalTokens == input(5) + output(1344) + cache_read(23415) + cache_creation(350) = 25114
+        # Exact cost (haiku rates, 2026-06):
+        #   input:        5 * 1.00 / 1e6 =  0.000005
+        #   output:    1344 * 5.00 / 1e6 =  0.00672
+        #   cache_read: 23415 * 0.10 / 1e6 = 0.0023415
+        #   cache_5m:    350 * 1.25 / 1e6 =  0.0004375
+        #   total: 9504.00 / 1e6 = 0.009504   (full USD)
+        # Recomputed: (5*1.00 + 1344*5.00 + 23415*0.10 + 350*1.25) / 1e6
+        #           = (5 + 6720 + 2341.5 + 437.5) / 1e6 = 9504 / 1e6 = 0.009504
+        _EXPECTED_COST_HAIKU_REAL = round(
+            (5 * 1.00 + 1344 * 5.00 + 23415 * 0.10 + 350 * 1.25) / 1e6, 8
+        )
         real_shape = {
             "session_id": "s3",
             "tool_name": "Agent",
@@ -307,18 +418,80 @@ if __name__ == "__main__":
                 "status": "completed",
                 "agentType": "gearbox:scout",
                 "resolvedModel": "claude-haiku-4-5",
-                "totalTokens": 6294,
+                "totalTokens": 25114,
                 "totalToolUseCount": 0,
                 "totalDurationMs": 1275,
-                "usage": {"input_tokens": 3, "output_tokens": 10},
+                "usage": {
+                    "input_tokens": 5,
+                    "output_tokens": 1344,
+                    "cache_read_input_tokens": 23415,
+                    "cache_creation_input_tokens": 350,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": 350,
+                        "ephemeral_1h_input_tokens": 0,
+                    },
+                },
             },
         }
         r3 = build_record(real_shape)
-        assert r3["total_tokens"] == 6294, f"expected 6294, got {r3['total_tokens']}"
+        assert r3["total_tokens"] == 25114, f"expected 25114, got {r3['total_tokens']}"
         assert r3["num_turns"] == 0, f"expected 0, got {r3['num_turns']}"  # falsy-coalescing guard
         assert r3["duration_ms"] == 1275, f"expected 1275, got {r3['duration_ms']}"
-        assert r3["cost_estimated"] is True, "expected cost_estimated=True"
-        assert r3["cost_usd"] is not None and r3["cost_usd"] > 0, "expected cost_usd > 0"
+        assert r3["cost_estimated"] is False, "expected cost_estimated=False (split present → exact)"
+        assert r3["cost_usd"] == _EXPECTED_COST_HAIKU_REAL, \
+            f"expected {_EXPECTED_COST_HAIKU_REAL}, got {r3['cost_usd']}"
+        assert r3["input_tokens"] == 5, f"expected input_tokens=5, got {r3['input_tokens']}"
+        assert r3["output_tokens"] == 1344, f"expected output_tokens=1344, got {r3['output_tokens']}"
+        assert r3["cache_read_tokens"] == 23415, f"expected cache_read_tokens=23415, got {r3['cache_read_tokens']}"
+        assert r3["cache_creation_tokens"] == 350, f"expected cache_creation_tokens=350, got {r3['cache_creation_tokens']}"
+
+        # --- 1h cache-creation path: exercise ephemeral_1h_input_tokens rate ---
+        # haiku: 100 input + 200 output + 0 cache_read + 0 5m + 400 1h cache_write
+        # cost = (100*1.00 + 200*5.00 + 0*0.10 + 0*1.25 + 400*2.00) / 1e6
+        #      = (100 + 1000 + 0 + 0 + 800) / 1e6 = 1900 / 1e6 = 0.0019
+        _EXPECTED_COST_1H = round((100 * 1.00 + 200 * 5.00 + 400 * 2.00) / 1e6, 8)
+        shape_1h = {
+            "session_id": "s1h",
+            "tool_name": "Agent",
+            "tool_input": {"subagent_type": "gearbox:scout", "model": "claude-haiku-4-5", "prompt": "p"},
+            "cwd": "/tmp",
+            "tool_response": {
+                "totalTokens": 700,
+                "totalToolUseCount": 0,
+                "totalDurationMs": 500,
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 200,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 400,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": 0,
+                        "ephemeral_1h_input_tokens": 400,
+                    },
+                },
+            },
+        }
+        r_1h = build_record(shape_1h)
+        assert r_1h["cost_estimated"] is False, "expected cost_estimated=False for 1h path"
+        assert r_1h["cost_usd"] == _EXPECTED_COST_1H, \
+            f"expected {_EXPECTED_COST_1H}, got {r_1h['cost_usd']}"
+
+        # --- cost precedence: direct total_cost_usd wins over split ---
+        shape_direct = {
+            "session_id": "sdirect",
+            "tool_name": "Agent",
+            "tool_input": {"subagent_type": "gearbox:builder", "model": "claude-sonnet-4-6", "prompt": "p"},
+            "cwd": "/tmp",
+            "tool_response": {
+                "totalTokens": 1000,
+                "total_cost_usd": 0.00042,
+                "usage": {"input_tokens": 500, "output_tokens": 500},
+            },
+        }
+        r_direct = build_record(shape_direct)
+        assert r_direct["cost_estimated"] is False, "expected cost_estimated=False for direct cost"
+        assert r_direct["cost_usd"] == 0.00042, \
+            f"expected 0.00042 (direct), got {r_direct['cost_usd']}"
 
         # --- resolve_routing: gearbox:builder, no model param → derived ---
         rr1 = resolve_routing("gearbox:builder", {}, None)
@@ -418,6 +591,7 @@ if __name__ == "__main__":
         assert ra["uid"] != rb["uid"], f"parallel-identical records must have distinct uids: {ra['uid']!r}"
 
         # Split-usage fallback: no aggregate token field, only input/output → summed
+        # input(120) + output(30) = 150; split present → exact cost, cost_estimated=False
         split_shape = {
             "session_id": "s4",
             "tool_name": "Agent",
@@ -434,8 +608,11 @@ if __name__ == "__main__":
         }
         r4 = build_record(split_shape)
         assert r4["total_tokens"] == 150, f"expected 150, got {r4['total_tokens']}"
+        assert r4["cost_estimated"] is False, "expected cost_estimated=False (split present)"
+        assert r4["cost_usd"] is not None and r4["cost_usd"] > 0, "expected cost_usd > 0"
 
         # Split-usage fallback: only input side present → input total (not 0, not None)
+        # split present → exact cost, cost_estimated=False
         split_input_only = {
             "session_id": "s5",
             "tool_name": "Agent",
@@ -445,6 +622,7 @@ if __name__ == "__main__":
         }
         r5 = build_record(split_input_only)
         assert r5["total_tokens"] == 80, f"expected 80 (input only), got {r5['total_tokens']}"
+        assert r5["cost_estimated"] is False, "expected cost_estimated=False (split present)"
 
         # Split-usage fallback: neither side present → None (not 0)
         split_none = {

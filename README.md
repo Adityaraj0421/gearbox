@@ -85,7 +85,7 @@ Something not working? Run `/gearbox:doctor` first — it checks the ten most co
 
 ## Telemetry
 
-Each Task delegation appends one JSONL line to a single global log at `~/.claude/gearbox-log.jsonl`. Fields: `ts`, `session_id`, `tool_name`, `subagent_type`, `model`, `prompt_head` (first 200 chars), `cwd`, plus post-completion metrics parsed from the tool response — `total_tokens`, `num_turns`, `duration_ms`, `cost_usd`, and `cost_estimated` (true when `cost_usd` is derived from a blended per-model rate rather than reported directly). Missing metrics are recorded as null. Each record keeps its `cwd`, so per-project views are a `group by cwd` over one global corpus. The log stays on your machine — it is not sent anywhere.
+Each Task delegation appends one JSONL line to a single global log at `~/.claude/gearbox-log.jsonl`. Fields: `ts`, `session_id`, `tool_name`, `subagent_type`, `model`, `prompt_head` (first 200 chars), `cwd`, plus post-completion metrics parsed from the tool response — `total_tokens`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `num_turns`, `duration_ms`, `cost_usd`, and `cost_estimated` (false when `cost_usd` is computed exactly from the per-component token split; true when derived from a blended per-model rate because the split was absent). Missing metrics are recorded as null. Each record keeps its `cwd`, so per-project views are a `group by cwd` over one global corpus. The log stays on your machine — it is not sent anywhere.
 
 ## License
 
