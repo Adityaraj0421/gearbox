@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Outcome-labeling runner for Gearbox delegation logs.
 
-Consumes .claude/gearbox-log.jsonl (post-issue-#5 schema: ts, session_id,
+Consumes ~/.claude/gearbox-log.jsonl (post-issue-#5 schema: ts, session_id,
 tool_name, subagent_type, model, prompt_head, cwd, total_tokens, num_turns,
 duration_ms, cost_usd, cost_estimated) and emits labeled training data for
 the future learned router (reward = success/cost).
@@ -50,7 +50,11 @@ def build_training_row(record: dict, acceptable: bool) -> dict:
         cost_float = float(cost_usd)
         if cost_float > 0:
             # ponytail: simplistic success/cost reward; upgrade to graded
-            # quality + escalation penalty when those signals exist.
+            # quality + escalation penalty when those signals exist. When the
+            # record's cost_usd is estimated (cost_estimated=true, the common
+            # case — see _BLENDED_RATES in log-routing.py), this reward is
+            # estimate-derived too; the row carries cost_estimated so consumers
+            # can weight or filter on it.
             reward = (1.0 if acceptable else 0.0) / cost_float
         else:
             reward = None
@@ -253,9 +257,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--log",
-        default=".claude/gearbox-log.jsonl",
+        default=str(Path.home() / ".claude" / "gearbox-log.jsonl"),
         metavar="PATH",
-        help="Input delegation log (default: .claude/gearbox-log.jsonl)",
+        help="Input delegation log (default: ~/.claude/gearbox-log.jsonl)",
     )
     parser.add_argument(
         "--out",

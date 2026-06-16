@@ -2,9 +2,9 @@
 """Gearbox routing logger.
 
 PostToolUse hook for the Task tool. Reads the hook event JSON from stdin and
-appends one line per delegation to .claude/gearbox-log.jsonl in the PROJECT
-directory (cwd), not the plugin directory — the telemetry belongs to the repo
-being worked on.
+appends one line per delegation to the canonical global log at
+~/.claude/gearbox-log.jsonl. Each record keeps its project `cwd`, so per-project
+views are a group-by-cwd over the single global corpus.
 
 This log is the seed data for a future learned router (contextual bandit over
 {model x tier} with reward = success/cost). Verify the exact hook input schema
@@ -37,8 +37,10 @@ _AGENT_ROUTING: dict = {
 
 _VERDICT_RE = re.compile(r"VERDICT:\s*(APPROVE|REJECT)", re.IGNORECASE)
 
-# ponytail: approximate blended USD-per-million-tokens rates; refine per
-# input/output token split if the hook ever exposes it.
+# ponytail: approximate blended USD-per-million-tokens rates, as of the 2026-06
+# rate card (empirically confirmed that month across 15 dispatches; see module
+# docstring). Re-pin the date and values when Anthropic pricing changes. Refine
+# per input/output token split if the hook ever exposes it.
 _BLENDED_RATES = {
     "haiku": 0.8,
     "sonnet": 9.0,
@@ -278,16 +280,9 @@ def main() -> None:
 
     record = build_record(event)
 
-    # Resolve log base dir: env var (if valid dir) > event cwd (if valid dir) > ".".
-    base_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
-    if base_dir and os.path.isdir(base_dir):
-        log_base = Path(base_dir)
-    elif event.get("cwd") and os.path.isdir(event["cwd"]):
-        log_base = Path(event["cwd"])
-    else:
-        log_base = Path(".")
-
-    log_path = log_base / ".claude" / "gearbox-log.jsonl"
+    # Canonical global log; cwd is retained per-record so consumers can do
+    # per-project rollups via `group by cwd`.
+    log_path = Path.home() / ".claude" / "gearbox-log.jsonl"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as f:

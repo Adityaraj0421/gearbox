@@ -81,7 +81,13 @@ EOF
 ```
 
 - Output contains "user" → **PASS**
-- Output contains only "project" or "local" (no "user") → **WARN**: "Gearbox only routes in one folder — reinstall and choose user scope at the prompt"
+- Output contains only "project" or "local" (no "user") → **WARN**: Gearbox is
+  installed at folder scope, so it only routes inside that one directory. Fix —
+  reinstall at **user** scope so it routes everywhere:
+  1. Open `/plugin`, find gearbox, and remove the project/local install.
+  2. Run `/plugin install gearbox@gearbox` and choose **user** scope at the prompt.
+  3. `/reload-plugins` (or restart Claude Code), then re-run `/gearbox:doctor` —
+     CHECK 4 should now report `user`.
 - Output is `MISSING:...` or `NOT_FOUND` → **WARN** with the path checked: "installed_plugins.json not found or no gearbox entry"
 
 ---
@@ -101,12 +107,13 @@ mkdir -p .claude && touch .claude/.gearbox-doctor-test && rm .claude/.gearbox-do
 
 This is the only token-spending check.
 
-**Step A** — note the current line count of `.claude/gearbox-log.jsonl`:
+**Step A** — note the current line count of `~/.claude/gearbox-log.jsonl`
+(the canonical global log):
 
 ```bash
 python3 -c "
 import pathlib
-p = pathlib.Path('.claude/gearbox-log.jsonl')
+p = pathlib.Path.home() / '.claude' / 'gearbox-log.jsonl'
 print(sum(1 for _ in p.open()) if p.exists() else 0)
 "
 ```
@@ -116,12 +123,12 @@ Record this as BEFORE_COUNT.
 **Step B** — delegate to `gearbox:scout` (model: haiku) with exactly this
 prompt: `Reply with exactly: GEARBOX DOCTOR OK. Use no tools.`
 
-**Step C** — re-read the log and count lines again (AFTER_COUNT).
+**Step C** — re-read the global log and count lines again (AFTER_COUNT).
 
 ```bash
 python3 -c "
 import json, pathlib
-p = pathlib.Path('.claude/gearbox-log.jsonl')
+p = pathlib.Path.home() / '.claude' / 'gearbox-log.jsonl'
 if not p.exists():
     print('NO_LOG')
     exit()

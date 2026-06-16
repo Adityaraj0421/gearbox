@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+"""Routing dashboard: aggregate gearbox delegation log into per-tier rollups.
+
+Reads ~/.claude/gearbox-log.jsonl (or a path given by --log) and prints a
+plain-text table grouped by tier (default) or by project cwd (--by-project).
+Read-only: no files are written.
+"""
+import argparse
+import json
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Log loading
+# ---------------------------------------------------------------------------
+
+def load_records(log_path: Path) -> list:
+    """Read all valid JSON records from the log.  Malformed/blank lines are
+    silently skipped."""
+    records = []
+    if not log_path.exists():
+        return records
+    with log_path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return records
+
+
+# ---------------------------------------------------------------------------
+# Aggregation
+# ---------------------------------------------------------------------------
+
+def _empty_bucket() -> dict:
+    return {
+        "dispatches": 0,
+        "approve": 0,
+        "reject": 0,
+        "none": 0,
+        "cost_sum": 0.0,
+        "cost_count": 0,    # non-null cost records
+        "total_tokens": 0,
+        "any_estimated": False,
+    }
+
+
+def aggregate(records: list, group_by: str) -> dict:
+    """Return a dict of {group_key: bucket} for all records.
+
+    group_by: "tier" or "cwd"
+    """
+    buckets = defaultdict(_empty_bucket)
+    for rec in records:
+        key = rec.get(group_by) or "(unknown)"
+        b = buckets[key]
+        b["dispatches"] += 1
+
+        verdict = rec.get("verdict", "")
+        if verdict == "approve":
+            b["approve"] += 1
+        elif verdict == "reject":
+            b["reject"] += 1
+        else:
+            b["none"] += 1
+
+        cost = rec.get("cost_usd")
+        if cost is not None:
+            try:
+                b["cost_sum"] += float(cost)
+                b["cost_count"] += 1
+            except (TypeError, ValueError):
+                pass
+
+        tokens = rec.get("total_tokens")
+        if tokens is not None:
+            try:
+                b["total_tokens"] += int(tokens)
+            except (TypeError, ValueError):
+                pass
+
+        if rec.get("cost_estimated"):
+            b["any_estimated"] = True
+
+    return dict(buckets)
+
+
+# ---------------------------------------------------------------------------
+# Reject-rate
+# ---------------------------------------------------------------------------
+
+def reject_rate(bucket: dict) -> str:
+    """Return reject-rate as a percentage string, or 'n/a' when no verified
+    dispatches exist at this group.
+
+    # ponytail: reject / (approve + reject) is the available proxy for routing
+    # miscalibration — a high rate signals too-hard work being sent to this
+    # tier.  True escalation-chain rate (re-dispatch correlation) is deferred
+    # to G32 transcript mining.
+    """
+    verified = bucket["approve"] + bucket["reject"]
+    if verified == 0:
+        return "n/a"
+    return f"{100.0 * bucket['reject'] / verified:.1f}%"
+
+
+# ---------------------------------------------------------------------------
+# Formatting
+# ---------------------------------------------------------------------------
+
+def _fmt_cost(val: float) -> str:
+    return f"${val:.4f}"
+
+
+def _fmt_mean(bucket: dict) -> str:
+    if bucket["cost_count"] == 0:
+        return "n/a"
+    return _fmt_cost(bucket["cost_sum"] / bucket["cost_count"])
+
+
+def _total_bucket(buckets: dict) -> dict:
+    total = _empty_bucket()
+    for b in buckets.values():
+        total["dispatches"] += b["dispatches"]
+        total["approve"] += b["approve"]
+        total["reject"] += b["reject"]
+        total["none"] += b["none"]
+        total["cost_sum"] += b["cost_sum"]
+        total["cost_count"] += b["cost_count"]
+        total["total_tokens"] += b["total_tokens"]
+        if b["any_estimated"]:
+            total["any_estimated"] = True
+    return total
+
+
+def _print_table(buckets: dict, group_label: str) -> bool:
+    """Print the aligned table.  Returns True if any row has cost_estimated."""
+    rows = []
+    for key in sorted(buckets):
+        b = buckets[key]
+        rows.append((
+            key,
+            b["dispatches"],
+            b["approve"],
+            b["reject"],
+            b["none"],
+            reject_rate(b),
+            _fmt_cost(b["cost_sum"]),
+            _fmt_mean(b),
+            b["total_tokens"],
+        ))
+
+    total = _total_bucket(buckets)
+    rows.append((
+        "TOTAL",
+        total["dispatches"],
+        total["approve"],
+        total["reject"],
+        total["none"],
+        reject_rate(total),
+        _fmt_cost(total["cost_sum"]),
+        _fmt_mean(total),
+        total["total_tokens"],
+    ))
+
+    headers = (
+        group_label,
+        "dispatches",
+        "approve",
+        "reject",
+        "none",
+        "reject-rate",
+        "cost_usd",
+        "mean_cost",
+        "total_tokens",
+    )
+
+    # Compute column widths.
+    cols = list(zip(headers, *rows))
+    widths = [max(len(str(cell)) for cell in col) for col in cols]
+
+    sep = "  "
+    header_line = sep.join(str(h).ljust(widths[i]) for i, h in enumerate(headers))
+    print(header_line)
+    print("-" * len(header_line))
+
+    for i, row in enumerate(rows):
+        is_total = i == len(rows) - 1
+        if is_total:
+            print("-" * len(header_line))
+        print(sep.join(str(cell).ljust(widths[j]) for j, cell in enumerate(row)))
+
+    any_estimated = any(b["any_estimated"] for b in buckets.values())
+    return any_estimated
+
+
+# ---------------------------------------------------------------------------
+# Selfcheck
+# ---------------------------------------------------------------------------
+
+def selfcheck() -> None:
+    """Assert-based tests on aggregation and reject-rate logic.  Exits 0 on
+    success, non-zero on assertion failure."""
+
+    # --- synthetic records covering all verdict/cost cases ---
+    recs = [
+        # T1: 1 approve, 1 reject, cost 0.10 + 0.20, tokens 1000+2000
+        {"tier": "T1", "cwd": "/proj/a", "verdict": "approve", "cost_usd": 0.10,
+         "cost_estimated": False, "total_tokens": 1000},
+        {"tier": "T1", "cwd": "/proj/a", "verdict": "reject",  "cost_usd": 0.20,
+         "cost_estimated": True,  "total_tokens": 2000},
+        # T2: 2 approve, 0 reject, cost 0.05 (other has null cost), tokens 500
+        {"tier": "T2", "cwd": "/proj/b", "verdict": "approve", "cost_usd": 0.05,
+         "cost_estimated": False, "total_tokens": 500},
+        {"tier": "T2", "cwd": "/proj/b", "verdict": "approve", "cost_usd": None,
+         "cost_estimated": False, "total_tokens": 300},
+        # T0: empty verdict (unverified scout), no cost, tokens 100
+        {"tier": "T0", "cwd": "/proj/a", "verdict": "",         "cost_usd": None,
+         "cost_estimated": False, "total_tokens": 100},
+    ]
+
+    # --- aggregate by tier ---
+    by_tier = aggregate(recs, "tier")
+    assert set(by_tier.keys()) == {"T0", "T1", "T2"}, f"unexpected keys: {by_tier.keys()}"
+
+    t0 = by_tier["T0"]
+    assert t0["dispatches"] == 1
+    assert t0["approve"] == 0
+    assert t0["reject"] == 0
+    assert t0["none"] == 1
+    assert t0["cost_sum"] == 0.0
+    assert t0["cost_count"] == 0
+    assert t0["total_tokens"] == 100
+    assert not t0["any_estimated"]
+
+    t1 = by_tier["T1"]
+    assert t1["dispatches"] == 2
+    assert t1["approve"] == 1
+    assert t1["reject"] == 1
+    assert t1["none"] == 0
+    assert abs(t1["cost_sum"] - 0.30) < 1e-9, f"T1 cost_sum: {t1['cost_sum']}"
+    assert t1["cost_count"] == 2
+    assert t1["total_tokens"] == 3000
+    assert t1["any_estimated"]
+
+    t2 = by_tier["T2"]
+    assert t2["dispatches"] == 2
+    assert t2["approve"] == 2
+    assert t2["reject"] == 0
+    assert abs(t2["cost_sum"] - 0.05) < 1e-9, f"T2 cost_sum: {t2['cost_sum']}"
+    assert t2["cost_count"] == 1   # null excluded from count
+    assert t2["total_tokens"] == 800
+    assert not t2["any_estimated"]
+
+    # --- reject-rate ---
+    assert reject_rate(t0) == "n/a", "T0 no verified dispatches → n/a"
+    assert reject_rate(t1) == "50.0%", f"T1 reject-rate: {reject_rate(t1)}"
+    assert reject_rate(t2) == "0.0%",  f"T2 reject-rate: {reject_rate(t2)}"
+
+    # --- mean cost ---
+    assert _fmt_mean(t0) == "n/a"
+    assert _fmt_mean(t1) == "$0.1500", f"T1 mean: {_fmt_mean(t1)}"
+    assert _fmt_mean(t2) == "$0.0500", f"T2 mean: {_fmt_mean(t2)}"
+
+    # --- aggregate by cwd ---
+    by_cwd = aggregate(recs, "cwd")
+    assert set(by_cwd.keys()) == {"/proj/a", "/proj/b"}, f"unexpected cwd keys: {by_cwd.keys()}"
+    proj_a = by_cwd["/proj/a"]
+    assert proj_a["dispatches"] == 3   # T1 approve + T1 reject + T0 none
+    assert proj_a["approve"] == 1
+    assert proj_a["reject"] == 1
+    assert proj_a["none"] == 1
+
+    # --- total bucket ---
+    total = _total_bucket(by_tier)
+    assert total["dispatches"] == 5
+    assert total["approve"] == 3
+    assert total["reject"] == 1
+    assert total["none"] == 1
+    assert abs(total["cost_sum"] - 0.35) < 1e-9, f"total cost_sum: {total['cost_sum']}"
+    assert total["cost_count"] == 3
+    assert total["total_tokens"] == 3900
+    assert total["any_estimated"]
+
+    print("selfcheck OK")
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Show gearbox routing log aggregated by tier or project."
+    )
+    parser.add_argument(
+        "--log",
+        default=str(Path.home() / ".claude" / "gearbox-log.jsonl"),
+        metavar="PATH",
+        help="Delegation log to read (default: ~/.claude/gearbox-log.jsonl)",
+    )
+    parser.add_argument(
+        "--by-project",
+        action="store_true",
+        help="Group rows by project cwd instead of tier.",
+    )
+    parser.add_argument(
+        "--selfcheck",
+        action="store_true",
+        help="Run assert-based self-tests and exit.",
+    )
+    args = parser.parse_args()
+
+    if args.selfcheck:
+        selfcheck()
+
+    log_path = Path(args.log)
+    records = load_records(log_path)
+
+    if not records:
+        print(f"No records found in {log_path}")
+        sys.exit(0)
+
+    group_by = "cwd" if args.by_project else "tier"
+    group_label = "project" if args.by_project else "tier"
+
+    buckets = aggregate(records, group_by)
+    any_estimated = _print_table(buckets, group_label)
+
+    if any_estimated:
+        print()
+        print("* costs are estimate-derived (blended per-model rates), not billed figures")
+
+
+if __name__ == "__main__":
+    main()

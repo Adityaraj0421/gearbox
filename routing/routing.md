@@ -56,7 +56,7 @@ work to a cheap model twice.
    parallel, not sequentially.
 7. **Log every routing decision** by ending your turn-level reasoning with a
    one-line summary: `[gearbox] task="<8 words>" tier=T<n> reason="<6 words>"`.
-   (A hook also logs Task calls automatically to .claude/gearbox-log.jsonl.)
+   (A hook also logs Task calls automatically to ~/.claude/gearbox-log.jsonl.)
 
 8. **Fallback when a named agent is unavailable** (e.g. 'agent type not found'): use the built-in proxy with the tier's explicit model — scout→Explore+haiku, grunt→general-purpose+haiku, builder→general-purpose+sonnet, architect→general-purpose+opus — and paste the unavailable agent's rules from the gearbox agents/ folder into the Task prompt so the tier's guardrails still apply. Log the fallback in your [gearbox] summary line as fallback=true.
 
