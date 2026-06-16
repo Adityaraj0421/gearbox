@@ -57,12 +57,20 @@ before scoring real data.
 
 ## Baseline
 
-The baseline is **modeled offline** — no second Claude run, no `claude -p`.
-It estimates what each task would have cost if dispatched to opus every time
-(`total_tokens × $45/M`), using the same token counts the router actually
-recorded.  This is a rough ceiling (it assumes per-task token counts are
-policy-invariant and that opus is always acceptable), NOT a measured
-counterfactual.
+Three baselines are **modeled offline** — no second Claude run, no `claude -p`.
+All use the same token counts the router recorded, multiplied by per-tier
+blended rates (2026-06: haiku $1.5/M, sonnet $5.0/M, opus $8.0/M):
+
+- **always-sonnet** — every task dispatched to sonnet regardless of complexity.
+- **always-opus** — every task dispatched to opus (quality ceiling).
+- **escalate-on-fail** — starts at the cheapest tier (T0) and escalates one
+  tier on failure until reaching the tier the router chose, paying for the
+  wasted cheaper attempts.  This is the router's core value prop: skip straight
+  to the right tier.
+
+TV (verifier) dispatches are excluded from all baselines — they aren't routing
+decisions.  Token counts are assumed policy-invariant.  These are rough
+estimates, NOT measured counterfactuals.
 
 ## Outcome-labeling runner
 
