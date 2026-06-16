@@ -37,6 +37,18 @@ jobs:
       - name: Selfcheck recommend.py
         run: python3 bench/recommend.py --selfcheck
 
+      - name: Selfcheck inject-routing.py
+        run: python3 hooks/scripts/inject-routing.py --selfcheck
+
+      - name: Selfcheck budget_common.py
+        run: python3 hooks/scripts/budget_common.py --selfcheck
+
+      - name: Selfcheck enforce-budget.py
+        run: python3 hooks/scripts/enforce-budget.py --selfcheck
+
+      - name: Selfcheck budget-warn.py
+        run: python3 hooks/scripts/budget-warn.py --selfcheck
+
       # --- Spec-vs-code consistency (fails build on drift) ---
       # ponytail: YAML "linting" of agent frontmatter is covered by
       # check_consistency.py's frontmatter parse rather than adding a

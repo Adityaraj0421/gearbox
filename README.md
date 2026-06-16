@@ -63,6 +63,26 @@ The everyday profiles never touch the hard floors (auth / payments / migrations 
 
 **To set a profile for a project**, create `.claude/gearbox-profile` in the project root containing just the profile name (e.g. `cost-conscious`). **To set it for CI or headless runs**, set the `GEARBOX_PROFILE` environment variable — it takes precedence over the file.
 
+## Budget caps (optional)
+
+Gearbox can cap how much subagent work a session burns. It is **opt-in**: with no cap configured, nothing changes. Subagents draw on the same Claude usage limit as your main session and are token-heavy, so a cap is a backstop against runaway spend.
+
+The cap is denominated in **weighted tokens** by default — a Haiku-equivalent unit derived from each dispatch's exact cost, so an Opus token counts roughly 5× a Haiku token (it drains your limit ~5× as fast). This mirrors how a subscription's usage limit actually burns; the weighting is the API price ratio, a tunable proxy since Anthropic does not publish the subscription's internal formula. Set `unit` to `tok` (raw tokens, all models equal) or `usd` (dollars) if you prefer.
+
+**To set caps for a project**, create `.claude/gearbox-budget.json`:
+
+```json
+{ "session_cap": 2000000, "task_cap": 400000, "unit": "wtok" }
+```
+
+Either cap may be omitted. **For CI or headless runs**, the `GEARBOX_SESSION_CAP`, `GEARBOX_TASK_CAP`, and `GEARBOX_BUDGET_UNIT` environment variables override the file per-key.
+
+- **Session cap** — when the session's running total reaches the cap, the next dispatch prompts you to approve or decline it (never a silent overrun). Decline and down-tier (e.g. `GEARBOX_PROFILE=cost-conscious`) or wrap up.
+- **Threshold warnings** — at 80% and 100% of the session cap, a one-time warning is surfaced.
+- **Per-task cap** — a dispatch that exceeds it triggers a warning after it completes (a dispatch's cost is unknowable before it runs).
+
+For everyday savings, the `cost-conscious` routing profile is the bigger lever (it routes more work to cheaper tiers, and Opus drains your limit fastest); the cap is the hard backstop on top.
+
 ## Routing prior (optional)
 
 Run `/gearbox:recommend` to mine your `~/.claude/gearbox-log.jsonl` into a `{task-class × tier}` win-rate table — which tier historically earned the verifier's approval, at what cost, per kind of task. It writes `~/.claude/gearbox-recommendations.md`, and while that file is fresh the SessionStart hook injects it after the routing policy so the orchestrator can weigh it as a *prior*. It is advisory only: a tie-breaker, never an override of the hard floors, max-dimension routing, or the circuit breaker. Cells below a minimum sample count are flagged `low-n` and earn no recommendation, so a thin log cannot skew routing.
