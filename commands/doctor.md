@@ -101,12 +101,13 @@ mkdir -p .claude && touch .claude/.gearbox-doctor-test && rm .claude/.gearbox-do
 
 This is the only token-spending check.
 
-**Step A** — note the current line count of `.claude/gearbox-log.jsonl`:
+**Step A** — note the current line count of `~/.claude/gearbox-log.jsonl`
+(the canonical global log):
 
 ```bash
 python3 -c "
 import pathlib
-p = pathlib.Path('.claude/gearbox-log.jsonl')
+p = pathlib.Path.home() / '.claude' / 'gearbox-log.jsonl'
 print(sum(1 for _ in p.open()) if p.exists() else 0)
 "
 ```
@@ -116,12 +117,12 @@ Record this as BEFORE_COUNT.
 **Step B** — delegate to `gearbox:scout` (model: haiku) with exactly this
 prompt: `Reply with exactly: GEARBOX DOCTOR OK. Use no tools.`
 
-**Step C** — re-read the log and count lines again (AFTER_COUNT).
+**Step C** — re-read the global log and count lines again (AFTER_COUNT).
 
 ```bash
 python3 -c "
 import json, pathlib
-p = pathlib.Path('.claude/gearbox-log.jsonl')
+p = pathlib.Path.home() / '.claude' / 'gearbox-log.jsonl'
 if not p.exists():
     print('NO_LOG')
     exit()

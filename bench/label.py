@@ -253,9 +253,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--log",
-        default=".claude/gearbox-log.jsonl",
+        default=str(Path.home() / ".claude" / "gearbox-log.jsonl"),
         metavar="PATH",
-        help="Input delegation log (default: .claude/gearbox-log.jsonl)",
+        help="Input delegation log (default: ~/.claude/gearbox-log.jsonl)",
     )
     parser.add_argument(
         "--out",

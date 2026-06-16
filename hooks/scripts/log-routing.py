@@ -278,16 +278,9 @@ def main() -> None:
 
     record = build_record(event)
 
-    # Resolve log base dir: env var (if valid dir) > event cwd (if valid dir) > ".".
-    base_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
-    if base_dir and os.path.isdir(base_dir):
-        log_base = Path(base_dir)
-    elif event.get("cwd") and os.path.isdir(event["cwd"]):
-        log_base = Path(event["cwd"])
-    else:
-        log_base = Path(".")
-
-    log_path = log_base / ".claude" / "gearbox-log.jsonl"
+    # Canonical global log; cwd is retained per-record so consumers can do
+    # per-project rollups via `group by cwd`.
+    log_path = Path.home() / ".claude" / "gearbox-log.jsonl"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as f:
