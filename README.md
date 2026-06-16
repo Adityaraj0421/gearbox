@@ -49,6 +49,20 @@ Verdict outcomes:
 
 Run `/gearbox:init` inside a project to create a local copy of the routing policy at `.claude/routing.md`. The SessionStart hook will inject your local copy instead of the plugin default. Edit `.claude/routing.md` to adjust tier thresholds, add project-specific hard floors, or extend the escalation rules.
 
+## Routing profiles (optional)
+
+Gearbox ships three everyday profiles and three benchmark-only forced-tier profiles, selectable per-project or via environment variable.
+
+- **`cost-conscious`** — shifts tier thresholds down one notch (bias cheaper); boundary calls go to the cheaper tier. The verifier and escalation ladder recover any misroute.
+- **`balanced`** (default) — standard thresholds; no block is appended to the injected policy.
+- **`quality-first`** — shifts thresholds up one notch (bias stronger); boundary calls go to the stronger tier.
+
+The everyday profiles never touch the hard floors (auth / payments / migrations / concurrency / secrets → T1 minimum; production-breaking risk → T2) or the circuit breaker.
+
+**`always-T0` / `always-T1` / `always-T2`** are benchmark-only: every task routes to that tier regardless of classification score, overriding both the max-dimension rule and the hard floors. For baseline measurement only — never use these for real work.
+
+**To set a profile for a project**, create `.claude/gearbox-profile` in the project root containing just the profile name (e.g. `cost-conscious`). **To set it for CI or headless runs**, set the `GEARBOX_PROFILE` environment variable — it takes precedence over the file.
+
 ## Routing prior (optional)
 
 Run `/gearbox:recommend` to mine your `~/.claude/gearbox-log.jsonl` into a `{task-class × tier}` win-rate table — which tier historically earned the verifier's approval, at what cost, per kind of task. It writes `~/.claude/gearbox-recommendations.md`, and while that file is fresh the SessionStart hook injects it after the routing policy so the orchestrator can weigh it as a *prior*. It is advisory only: a tie-breaker, never an override of the hard floors, max-dimension routing, or the circuit breaker. Cells below a minimum sample count are flagged `low-n` and earn no recommendation, so a thin log cannot skew routing.
