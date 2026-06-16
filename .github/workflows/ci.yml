@@ -25,6 +25,18 @@ jobs:
       - name: Selfcheck capture-baseline.py
         run: python3 hooks/scripts/capture-baseline.py --selfcheck
 
+      - name: Selfcheck dashboard.py
+        run: python3 bench/dashboard.py --selfcheck
+
+      - name: Selfcheck eval.py
+        run: python3 bench/eval.py --selfcheck
+
+      - name: Selfcheck migrate-logs.py
+        run: python3 bench/migrate-logs.py --selfcheck
+
+      - name: Selfcheck recommend.py
+        run: python3 bench/recommend.py --selfcheck
+
       # --- Spec-vs-code consistency (fails build on drift) ---
       # ponytail: YAML "linting" of agent frontmatter is covered by
       # check_consistency.py's frontmatter parse rather than adding a
