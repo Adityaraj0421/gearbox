@@ -37,8 +37,10 @@ _AGENT_ROUTING: dict = {
 
 _VERDICT_RE = re.compile(r"VERDICT:\s*(APPROVE|REJECT)", re.IGNORECASE)
 
-# ponytail: approximate blended USD-per-million-tokens rates; refine per
-# input/output token split if the hook ever exposes it.
+# ponytail: approximate blended USD-per-million-tokens rates, as of the 2026-06
+# rate card (empirically confirmed that month across 15 dispatches; see module
+# docstring). Re-pin the date and values when Anthropic pricing changes. Refine
+# per input/output token split if the hook ever exposes it.
 _BLENDED_RATES = {
     "haiku": 0.8,
     "sonnet": 9.0,
