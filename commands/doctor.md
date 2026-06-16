@@ -81,7 +81,13 @@ EOF
 ```
 
 - Output contains "user" → **PASS**
-- Output contains only "project" or "local" (no "user") → **WARN**: "Gearbox only routes in one folder — reinstall and choose user scope at the prompt"
+- Output contains only "project" or "local" (no "user") → **WARN**: Gearbox is
+  installed at folder scope, so it only routes inside that one directory. Fix —
+  reinstall at **user** scope so it routes everywhere:
+  1. Open `/plugin`, find gearbox, and remove the project/local install.
+  2. Run `/plugin install gearbox@gearbox` and choose **user** scope at the prompt.
+  3. `/reload-plugins` (or restart Claude Code), then re-run `/gearbox:doctor` —
+     CHECK 4 should now report `user`.
 - Output is `MISSING:...` or `NOT_FOUND` → **WARN** with the path checked: "installed_plugins.json not found or no gearbox entry"
 
 ---
