@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Selfchecks for hook scripts and bench tools ---
+      - name: Selfcheck log-routing.py
+        run: python3 hooks/scripts/log-routing.py --selfcheck
+
+      - name: Selfcheck label.py
+        run: python3 bench/label.py --selfcheck
+
+      - name: Selfcheck capture-baseline.py
+        run: python3 hooks/scripts/capture-baseline.py --selfcheck
+
+      # --- Spec-vs-code consistency (fails build on drift) ---
+      # ponytail: YAML "linting" of agent frontmatter is covered by
+      # check_consistency.py's frontmatter parse rather than adding a
+      # yamllint dependency.
+      - name: Consistency check (real)
+        run: python3 bench/check_consistency.py
+
+      - name: Selfcheck check_consistency.py
+        run: python3 bench/check_consistency.py --selfcheck
+
+      # --- JSON-validate manifests ---
+      - name: Validate JSON manifests
+        run: |
+          python3 -c "import json; json.load(open('.claude-plugin/plugin.json'))"
+          python3 -c "import json; json.load(open('.claude-plugin/marketplace.json'))"
+          python3 -c "import json; json.load(open('hooks/hooks.json'))"
