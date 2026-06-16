@@ -49,6 +49,10 @@ Verdict outcomes:
 
 Run `/gearbox:init` inside a project to create a local copy of the routing policy at `.claude/routing.md`. The SessionStart hook will inject your local copy instead of the plugin default. Edit `.claude/routing.md` to adjust tier thresholds, add project-specific hard floors, or extend the escalation rules.
 
+## Routing prior (optional)
+
+Run `/gearbox:recommend` to mine your `~/.claude/gearbox-log.jsonl` into a `{task-class × tier}` win-rate table — which tier historically earned the verifier's approval, at what cost, per kind of task. It writes `~/.claude/gearbox-recommendations.md`, and while that file is fresh the SessionStart hook injects it after the routing policy so the orchestrator can weigh it as a *prior*. It is advisory only: a tie-breaker, never an override of the hard floors, max-dimension routing, or the circuit breaker. Cells below a minimum sample count are flagged `low-n` and earn no recommendation, so a thin log cannot skew routing.
+
 ## Integrating with an existing CLAUDE.md
 
 If you already have delegation, agent, or model-selection rules in your CLAUDE.md, reconcile them before first use:
@@ -70,12 +74,14 @@ Something not working? Run `/gearbox:doctor` first — it checks the ten most co
 - **SessionStart hook injection:** The routing policy is injected via a SessionStart hook. Some Claude Code surfaces may handle hook output differently — if routing rules seem absent, run `/gearbox:init` to create a project-local copy at `.claude/routing.md`, which the hook will prefer over the plugin default.
 - **Routing policy context cost:** The routing policy is injected each session start (~2.5KB context cost).
 - **Agent namespacing:** Gearbox agents install as `gearbox:scout`, `gearbox:grunt`, `gearbox:builder`, `gearbox:architect`, and `gearbox:verifier`. Reference them by these full names in prompts and routing rules.
+- **Routing prior is reward-sparse:** the `{task-class × tier}` prior only earns a recommendation where verifier verdicts exist (T1/T2 edits), so early on most cells are `low-n` and unrecommended. It sharpens as the log accumulates verdicts; until then it mostly confirms the cheap-tier defaults.
 
 ## Roadmap
 
 - **0.2.0** — PreToolUse hook auto-captures `git status --short` BASELINE before every T1/T2 delegation; verifier always receives it, guaranteed rather than instructed.
 - **0.3.0** — Observability & data quality: the routing log consolidates to a single global `~/.claude/gearbox-log.jsonl`; `bench/dashboard.py` reports per-tier rollups (verdict-reject rate, cost); `bench/eval.py` scores routing against a modeled baseline offline; blended cost rates are date-pinned; doctor CHECK 4 gives concrete scope-fix steps.
-- **0.4.0** — Learned router trained on `gearbox-log.jsonl` outcomes: a contextual bandit over `{task-type × model}` pairs (plus mined session-transcript signals), replacing the static rubric with a policy that improves with use.
+- **0.4.0** — Learned router (shipped): a *static win-rate prior* mined from `gearbox-log.jsonl` outcomes. `bench/recommend.py` builds a min-sample-guarded `{task-class × tier}` table (verifier approve-rate + mean cost); `/gearbox:recommend` regenerates and prints it; the SessionStart hook injects it (while fresh) after the policy as an advisory prior — a tie-breaker that never overrides the hard floors, max-dimension routing, or the circuit breaker.
+- **Post-1.0.0** — Revisit once the static prior proves the data is worth modeling: a contextual bandit over `{task-class × model}` with online exploration (plus mined session-transcript signals), auto-regeneration of the prior, and per-project tables keyed by `cwd`.
 
 ## Telemetry
 
