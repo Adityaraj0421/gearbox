@@ -74,7 +74,8 @@ Something not working? Run `/gearbox:doctor` first — it checks the ten most co
 ## Roadmap
 
 - **0.2.0** — PreToolUse hook auto-captures `git status --short` BASELINE before every T1/T2 delegation; verifier always receives it, guaranteed rather than instructed.
-- **0.3.0** — Learned router trained on `gearbox-log.jsonl` outcomes: a contextual bandit over `{task-type × model}` pairs, replacing the static rubric with a policy that improves with use.
+- **0.3.0** — Observability & data quality: the routing log consolidates to a single global `~/.claude/gearbox-log.jsonl`; `bench/dashboard.py` reports per-tier rollups (verdict-reject rate, cost); `bench/eval.py` scores routing against a modeled baseline offline; blended cost rates are date-pinned; doctor CHECK 4 gives concrete scope-fix steps.
+- **0.4.0** — Learned router trained on `gearbox-log.jsonl` outcomes: a contextual bandit over `{task-type × model}` pairs (plus mined session-transcript signals), replacing the static rubric with a policy that improves with use.
 
 ## Telemetry
 
