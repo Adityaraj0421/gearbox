@@ -463,11 +463,6 @@ if __name__ == "__main__":
         assert _int_or_none(5) == 5, "_int_or_none(5) must return 5"
         assert _int_or_none(None) is None, "_int_or_none(None) must return None"
 
-        # G3: CLAUDE_PROJECT_DIR env preference in main() is exercised via direct path check
-        # (main() writes to disk; we verify the resolution logic by importing os in the module)
-        import os as _os
-        assert "CLAUDE_PROJECT_DIR" in dir(_os) or True  # os is imported; dir check is trivial
-
         print("selfcheck OK")
         sys.exit(0)
 
