@@ -37,6 +37,16 @@ work to a cheap model twice.
      adds something the isolated subagent lacked. If that also fails — STOP.
      Surface to the human: every tier attempted, what each tried, exact errors,
      and the current hypothesis. Ask for direction. No further blind delegation.
+   - **Architect→builder handoff (normal case, distinct from the circuit breaker).**
+     Architect is read-only by design (no Write/Edit, no Agent tool): it returns a
+     plan or diagnosis, it does NOT edit files and does NOT spawn subagents.
+     When architect (T2) is dispatched for a hard problem and returns a plan, the
+     ORCHESTRATOR takes that plan and dispatches a builder (T1) to execute it;
+     builder's edits then go through the verifier per rule 9. Architect does not
+     hand off to builder itself — execution is always the orchestrator's job.
+     This is separate from the circuit-breaker case above: "architect can't execute"
+     (by design → orchestrator routes to builder) is not the same as "architect
+     couldn't solve it" (circuit breaker → stop and surface to human).
 4. **Hard floors.** Anything touching auth, payments, migrations, concurrency,
    or secrets starts at T1 minimum. Production-breaking risk starts at T2.
 5. **Don't over-delegate.** Single-file questions you can answer from context,
@@ -75,6 +85,9 @@ work to a cheap model twice.
 
 ## Effort (experimental)
 
-For T2 delegations where the problem is genuinely hard (score 5), include the
-word "ultrathink" in the Task prompt to request deeper reasoning. Verify on
-your version whether this propagates to subagents before relying on it.
+Thinking does not propagate across the Task boundary: putting "ultrathink" (or
+any thinking keyword) in a Task prompt does nothing inside the subagent — the
+prompt arrives as plain text; the subagent receives no thinking budget from it.
+The lever for harder work is **tier/model selection**: routing to architect means
+routing to opus, which is where the deeper reasoning lives. Do not add thinking
+keywords to Task prompts.
