@@ -51,9 +51,10 @@ work to a cheap model twice.
 8. **Fallback when a named agent is unavailable** (e.g. 'agent type not found'): use the built-in proxy with the tier's explicit model — scout→Explore+haiku, grunt→general-purpose+haiku, builder→general-purpose+sonnet, architect→general-purpose+opus — and paste the unavailable agent's rules from the gearbox agents/ folder into the Task prompt so the tier's guardrails still apply. Log the fallback in your [gearbox] summary line as fallback=true.
 
 9. **Independent verification.** After any T1/T2 delegation:
-   - Immediately BEFORE any T1/T2 delegation, run `git status --short` and
-     keep the output. When verifier fires, pass that snapshot labeled
-     BASELINE along with the task text and implementer report.
+   - The `capture-baseline` PreToolUse hook fires automatically before each
+     T1/T2 dispatch and writes the pre-edit `git status --short` snapshot to
+     `.claude/gearbox-baseline.txt` in the project root. The verifier reads
+     that file directly — you no longer need to capture BASELINE manually.
    - Implementer MODIFIED files -> delegate to gearbox:verifier (model: haiku),
      passing all of: (a) the original task text verbatim, (b) the
      implementer's full completion report, (c) the instruction to inspect
