@@ -11,7 +11,13 @@ copy.
 """
 import json
 import os
+import time
 from pathlib import Path
+
+# ponytail: discard routing-prior artifact if older than this many days
+FRESH_DAYS = 30
+
+_PRIOR_PATH = os.path.expanduser("~/.claude/gearbox-recommendations.md")
 
 
 def main() -> None:
@@ -30,6 +36,17 @@ def main() -> None:
 
     try:
         content = routing_file.read_text(encoding="utf-8")
+
+        # Append routing-prior artifact if it exists and is fresh.
+        try:
+            prior_path = Path(_PRIOR_PATH)
+            age_seconds = time.time() - prior_path.stat().st_mtime
+            if age_seconds <= FRESH_DAYS * 86400:
+                prior_text = prior_path.read_text(encoding="utf-8")
+                content = content + "\n" + prior_text
+        except Exception:
+            pass  # silently fall back to policy-only
+
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",

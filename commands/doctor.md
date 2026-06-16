@@ -224,6 +224,32 @@ Evaluate:
 
 ---
 
+## CHECK 9 — ROUTING PRIOR ARTIFACT
+
+```bash
+python3 - <<'EOF'
+import pathlib, datetime, re
+
+p = pathlib.Path.home() / '.claude' / 'gearbox-recommendations.md'
+if not p.exists():
+    print("ABSENT")
+else:
+    mtime = datetime.datetime.fromtimestamp(p.stat().st_mtime)
+    age_days = (datetime.datetime.now() - mtime).days
+    # Try to extract the Generated date from the file
+    text = p.read_text()
+    m = re.search(r'Generated\s+(\S.*)', text)
+    gen_label = m.group(1).strip() if m else mtime.strftime('%Y-%m-%d')
+    print(f"EXISTS|{gen_label}|{age_days}")
+EOF
+```
+
+- Output is `ABSENT` → **PASS/SKIP**: "routing prior not yet generated — run `/gearbox:recommend` to create it (optional)"
+- Output starts with `EXISTS` and age_days ≤ 30 → **PASS**: "routing prior present, generated `<gen_label>`"
+- Output starts with `EXISTS` and age_days > 30 → **WARN**: "routing prior is stale (`<age_days>` days old) — run `/gearbox:recommend` to refresh"
+
+---
+
 ## FINAL OUTPUT
 
 After completing all checks, print this table and nothing else before it:
@@ -242,6 +268,7 @@ Gearbox doctor report
  6  | Live dispatch+telemetry  | ...    | ...
  7  | Legacy install conflict  | ...    | ...
  8  | Version freshness        | ...    | ...
+ 9  | Routing prior artifact   | ...    | ...
 ─────────────────────────────────────────────────────────────────────────
 ```
 
