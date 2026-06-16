@@ -2,9 +2,9 @@
 """Gearbox routing logger.
 
 PostToolUse hook for the Task tool. Reads the hook event JSON from stdin and
-appends one line per delegation to .claude/gearbox-log.jsonl in the PROJECT
-directory (cwd), not the plugin directory — the telemetry belongs to the repo
-being worked on.
+appends one line per delegation to the canonical global log at
+~/.claude/gearbox-log.jsonl. Each record keeps its project `cwd`, so per-project
+views are a group-by-cwd over the single global corpus.
 
 This log is the seed data for a future learned router (contextual bandit over
 {model x tier} with reward = success/cost). Verify the exact hook input schema

@@ -39,7 +39,7 @@ and whether the result was acceptable without rework.
 ## Outcome-labeling runner
 
 Once you've run real tasks with Gearbox installed, use `python3 bench/label.py`
-to walk `.claude/gearbox-log.jsonl` and label each delegation acceptable or not.
+to walk `~/.claude/gearbox-log.jsonl` and label each delegation acceptable or not.
 Labeled rows are appended to `bench/training-data.jsonl` immediately, so you can
 quit and resume at any time — already-labeled records are skipped. Run with
 `--selfcheck` to verify the helper logic before labeling real data.

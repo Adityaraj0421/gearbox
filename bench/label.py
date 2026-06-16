@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Outcome-labeling runner for Gearbox delegation logs.
 
-Consumes .claude/gearbox-log.jsonl (post-issue-#5 schema: ts, session_id,
+Consumes ~/.claude/gearbox-log.jsonl (post-issue-#5 schema: ts, session_id,
 tool_name, subagent_type, model, prompt_head, cwd, total_tokens, num_turns,
 duration_ms, cost_usd, cost_estimated) and emits labeled training data for
 the future learned router (reward = success/cost).
