@@ -45,7 +45,7 @@ def _load_present_keys(global_log: Path) -> set:
                 continue
             try:
                 keys.add(_dedup_key(json.loads(line)))
-            except (json.JSONDecodeError, Exception):
+            except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
                 pass
     return keys
 

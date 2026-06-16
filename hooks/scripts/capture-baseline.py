@@ -32,8 +32,8 @@ def should_capture(tool_input: dict) -> bool:
     if "builder" in subagent_type or "architect" in subagent_type:
         return True
 
-    if model in {"sonnet", "opus"}:
-        return True  # covers the fallback proxy (general-purpose/claude + explicit T1/T2 model)
+    if "sonnet" in model or "opus" in model:
+        return True  # fallback proxy: bare "sonnet"/"opus" or a full id like claude-sonnet-4-6
 
     return False  # scout/grunt/haiku/anything else
 

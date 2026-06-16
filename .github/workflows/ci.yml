@@ -4,11 +4,16 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # --- Selfchecks for hook scripts and bench tools ---
       - name: Selfcheck log-routing.py
