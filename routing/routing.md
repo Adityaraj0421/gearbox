@@ -26,6 +26,8 @@ work to a cheap model twice.
 3. **Escalation ladder.** If a tier reports "needs escalation", or fails twice on
    the same root cause: escalate exactly one tier, and pass the full failure
    report (what was tried, exact errors, hypothesis) in the new Task prompt.
+   When dispatching an escalation, begin the new Task prompt with the marker line
+   `[gearbox-escalation from=T<n> to=T<m>]` (e.g. `[gearbox-escalation from=T0 to=T1]`) so the routing log can record the escalation.
    Never retry a third time at the same tier. Never skip from T0 to T2 unless
    the failure report shows a design problem — a cross-cutting root cause, not a
    local slip: e.g. a concurrency/race condition, a schema or data-migration

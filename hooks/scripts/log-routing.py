@@ -321,6 +321,25 @@ def resolve_routing(subagent_type: str, tool_input: dict, tool_response) -> dict
     return {"model": model, "model_source": model_source, "tier": tier, "verdict": verdict}
 
 
+_ESCALATION_RE = re.compile(
+    r"\[gearbox-escalation\s+from=(T\d)\s+to=(T\d)\]", re.IGNORECASE
+)
+
+
+def parse_escalation(prompt_text: str) -> tuple:
+    """Parse the escalation marker from a Task prompt.
+
+    Returns (escalation, escalated_from, escalated_to):
+      escalation: True if the marker is present, else False
+      escalated_from: e.g. "T0" or None
+      escalated_to:   e.g. "T1" or None
+    """
+    m = _ESCALATION_RE.search(prompt_text or "")
+    if m:
+        return True, m.group(1), m.group(2)
+    return False, None, None
+
+
 def build_record(event: dict) -> dict:
     """Build the log record from a hook event dict. Pure function."""
     tool_input = event.get("tool_input", {}) or {}
@@ -329,6 +348,9 @@ def build_record(event: dict) -> dict:
 
     routing = resolve_routing(subagent_type, tool_input, tool_response)
     model = routing["model"]
+
+    prompt_full = tool_input.get("prompt", "") or ""
+    escalation, escalated_from, escalated_to = parse_escalation(prompt_full)
 
     metrics = _extract_metrics(tool_response)
 
@@ -356,6 +378,9 @@ def build_record(event: dict) -> dict:
         "model": model,
         "model_source": routing["model_source"],
         "tier": routing["tier"],
+        "escalation": escalation,
+        "escalated_from": escalated_from,
+        "escalated_to": escalated_to,
         "verdict": routing["verdict"],
         "prompt_head": _scrub_secrets((tool_input.get("prompt", "") or ""))[:200],
         "cwd": event.get("cwd", ""),
@@ -640,6 +665,58 @@ if __name__ == "__main__":
         assert _int_or_none(False) is None, "_int_or_none(False) must return None"
         assert _int_or_none(5) == 5, "_int_or_none(5) must return 5"
         assert _int_or_none(None) is None, "_int_or_none(None) must return None"
+
+        # --- parse_escalation: marker at prompt start ---
+        esc1, from1, to1 = parse_escalation("[gearbox-escalation from=T0 to=T1]\nDo the thing.")
+        assert esc1 is True, f"expected escalation=True, got {esc1}"
+        assert from1 == "T0", f"expected escalated_from=T0, got {from1}"
+        assert to1 == "T1", f"expected escalated_to=T1, got {to1}"
+
+        # --- parse_escalation: no marker present ---
+        esc2, from2, to2 = parse_escalation("Normal Task prompt with no escalation marker.")
+        assert esc2 is False, f"expected escalation=False, got {esc2}"
+        assert from2 is None, f"expected escalated_from=None, got {from2}"
+        assert to2 is None, f"expected escalated_to=None, got {to2}"
+
+        # --- parse_escalation: marker mid-prompt still detected ---
+        esc3, from3, to3 = parse_escalation("Context: prev attempt failed.\n[gearbox-escalation from=T1 to=T2]\nNow fix it.")
+        assert esc3 is True, f"expected escalation=True (mid-prompt), got {esc3}"
+        assert from3 == "T1", f"expected escalated_from=T1, got {from3}"
+        assert to3 == "T2", f"expected escalated_to=T2, got {to3}"
+
+        # --- build_record: escalation fields present on escalated dispatch ---
+        event_esc = {
+            "session_id": "sesc",
+            "tool_name": "Task",
+            "tool_input": {
+                "subagent_type": "gearbox:builder",
+                "model": "claude-sonnet-4-6",
+                "prompt": "[gearbox-escalation from=T0 to=T1]\nPrevious scout attempt failed: ...",
+            },
+            "cwd": "/tmp",
+            "tool_response": {"totalTokens": 200, "totalToolUseCount": 1, "totalDurationMs": 800},
+        }
+        r_esc = build_record(event_esc)
+        assert r_esc["escalation"] is True, f"expected escalation=True in record, got {r_esc['escalation']}"
+        assert r_esc["escalated_from"] == "T0", f"expected escalated_from=T0, got {r_esc['escalated_from']}"
+        assert r_esc["escalated_to"] == "T1", f"expected escalated_to=T1, got {r_esc['escalated_to']}"
+
+        # --- build_record: escalation fields False/None on normal dispatch ---
+        event_noesc = {
+            "session_id": "snoesc",
+            "tool_name": "Task",
+            "tool_input": {
+                "subagent_type": "gearbox:scout",
+                "model": "claude-haiku-4-5",
+                "prompt": "Read the file and summarize.",
+            },
+            "cwd": "/tmp",
+            "tool_response": {"totalTokens": 50, "totalToolUseCount": 0, "totalDurationMs": 300},
+        }
+        r_noesc = build_record(event_noesc)
+        assert r_noesc["escalation"] is False, f"expected escalation=False in record, got {r_noesc['escalation']}"
+        assert r_noesc["escalated_from"] is None, f"expected escalated_from=None, got {r_noesc['escalated_from']}"
+        assert r_noesc["escalated_to"] is None, f"expected escalated_to=None, got {r_noesc['escalated_to']}"
 
         print("selfcheck OK")
         sys.exit(0)
