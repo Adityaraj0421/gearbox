@@ -132,7 +132,7 @@ p = pathlib.Path.home() / '.claude' / 'gearbox-log.jsonl'
 if not p.exists():
     print('NO_LOG')
     exit()
-lines = [json.loads(l) for l in p if l.strip()]
+lines = [json.loads(l) for l in p.open() if l.strip()]
 print(len(lines))
 if lines:
     last = lines[-1]
