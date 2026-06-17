@@ -220,6 +220,33 @@ def assign_recs(cells: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Convenience helper for dashboard import
+# ---------------------------------------------------------------------------
+
+def recommended_tiers(records: list) -> dict:
+    """Return {task_class: recommended_tier_or_None} for all task-classes seen.
+
+    recommended_tier is the tier that assign_recs marks '✓ prefer', or None
+    when no cell has enough data (all low-n or no verdicts).  TV rows are
+    excluded (same as aggregate()).
+
+    Importable by dashboard.py — single source of truth for
+    classification/recommendation stays here.
+    """
+    cells = aggregate(records)
+    recs = assign_recs(cells)
+
+    result: dict = {}
+    for (task_class, tier), rec in recs.items():
+        if task_class not in result:
+            result[task_class] = None
+        if rec == "✓ prefer":
+            result[task_class] = tier
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Markdown rendering
 # ---------------------------------------------------------------------------
 
@@ -348,6 +375,15 @@ def selfcheck() -> None:
         f"T1 (80%) should beat T2 (60%): {recs_prefer}"
     assert recs_prefer.get(("implement/fix", "T2")) == "", \
         f"T2 should have blank rec: {recs_prefer}"
+
+    # --- recommended_tiers() wraps aggregate+assign_recs ---
+    rt = recommended_tiers(prefer_recs)
+    assert rt.get("implement/fix") == "T1", \
+        f"recommended_tiers: expected T1 for implement/fix, got: {rt}"
+    # Low-n records produce None (no winner).
+    rt_low = recommended_tiers(low_n_recs)
+    assert rt_low.get("mechanical-edit") is None, \
+        f"recommended_tiers: low-n should yield None, got: {rt_low}"
 
     print("selfcheck OK")
     sys.exit(0)
