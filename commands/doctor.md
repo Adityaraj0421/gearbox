@@ -176,19 +176,21 @@ grep -lF -- "@.claude/routing.md" CLAUDE.md 2>/dev/null && echo "CLAUDE_MD_FOUND
 **Step A** — read installed version:
 
 ```bash
-python3 -c "
-import json, os, pathlib
-root = os.environ.get('CLAUDE_PLUGIN_ROOT','')
+python3 - "${CLAUDE_PLUGIN_ROOT}" <<'PY'
+# root is the command-renderer-substituted ${CLAUDE_PLUGIN_ROOT} passed as argv,
+# not os.environ — the Bash tool's shell may not carry the env var (CHECK 0
+# resolves the same token the same way).
+import json, sys, pathlib
+root = sys.argv[1] if len(sys.argv) > 1 else ''
 if not root:
     print('NO_PLUGIN_ROOT')
-    exit()
+    sys.exit()
 p = pathlib.Path(root) / '.claude-plugin' / 'plugin.json'
 if not p.exists():
     print('NO_PLUGIN_JSON')
-    exit()
-d = json.loads(p.read_text())
-print(d.get('version','unknown'))
-"
+    sys.exit()
+print(json.loads(p.read_text()).get('version','unknown'))
+PY
 ```
 
 **Step B** — fetch the latest version from the plugin's own source repo. The repo
@@ -196,9 +198,9 @@ is read from the manifest's `repository` field, so a fork checks itself rather t
 upstream (5-second timeout; skip on failure):
 
 ```bash
-python3 - <<'PY'
-import json, os, pathlib, re, urllib.request
-root = os.environ.get('CLAUDE_PLUGIN_ROOT', '')
+python3 - "${CLAUDE_PLUGIN_ROOT}" <<'PY'
+import json, sys, pathlib, re, urllib.request
+root = sys.argv[1] if len(sys.argv) > 1 else ''  # substituted token, not os.environ
 repo = ''
 try:
     u = json.loads((pathlib.Path(root) / '.claude-plugin' / 'plugin.json').read_text()).get('repository', '')
