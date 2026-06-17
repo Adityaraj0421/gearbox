@@ -89,7 +89,15 @@ Run `/gearbox:recommend` to mine your `~/.claude/gearbox-log.jsonl` into a `{tas
 
 ## Status line (optional)
 
-Gearbox ships a small composable status-line segment, `bench/statusline.py`, that reads the status-line JSON on stdin and prints `[builder×5 scout×3 architect×1] $2.43` — tier/role counts drawn from the routing log for the current session, with the running cost drawn from the status-line input. It honors `NO_COLOR`.
+Gearbox ships a small composable status-line segment, `bench/statusline.py`, that reads the status-line JSON on stdin and prints `gearbox saved $0.43` — estimated savings versus running the same token workload on Opus, computed from the routing log for the current session. It honors `NO_COLOR`.
+
+The savings figure is an estimate: actual token counts would differ on Opus, but re-pricing the recorded per-component token splits at Opus rates gives a directionally accurate picture. It is consistent with the `cost_estimated` framing already present in the log.
+
+**Unit toggle** — set `GEARBOX_STATUSLINE_UNIT` before invoking the script:
+- `usd` (default): `gearbox saved $0.43`
+- `tokens`: `gearbox saved 840k tok` — savings expressed as Haiku-equivalent weighted tokens (same weighting used by the budget-caps feature)
+
+Anything unexpected falls back to `usd`.
 
 Plugins cannot register the main status line, so you wire it into your own `~/.claude/settings.json`. `${CLAUDE_PLUGIN_ROOT}` is not set for a user status-line command and the install path is version-pinned, so resolve the latest installed copy at config time:
 
