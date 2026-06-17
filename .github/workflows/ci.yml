@@ -31,6 +31,9 @@ jobs:
       - name: Selfcheck eval.py
         run: python3 bench/eval.py --selfcheck
 
+      - name: Selfcheck run-live.py
+        run: python3 bench/run-live.py --selfcheck
+
       - name: Selfcheck migrate-logs.py
         run: python3 bench/migrate-logs.py --selfcheck
 
