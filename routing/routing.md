@@ -83,6 +83,15 @@ work to a cheap model twice.
     directly (re-run the command / re-read the file). A surprising or empty scout
     result gets a second look, not a pass.
 
+11. **Orchestrator context hygiene.** Your own context accumulates every dispatch's
+    condensed report; past the smart zone (the early, high-recall span of the
+    window) routing quality decays. Between dispatch batches — at a clean boundary,
+    never mid-batch — if headroom is low, checkpoint and compact: each dispatch's
+    outcome is already persisted to `~/.claude/gearbox-log.jsonl` by the logging
+    hook, so it is safe to drop the verbose agent reports from context and continue
+    lean (flush first, drop second — never the reverse). Prefer this proactive
+    compaction at a boundary over the harness's forced, lossy auto-compaction.
+
 ## Effort (experimental)
 
 Thinking does not propagate across the Task boundary: putting "ultrathink" (or
