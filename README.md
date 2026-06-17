@@ -87,6 +87,36 @@ For everyday savings, the `cost-conscious` routing profile is the bigger lever (
 
 Run `/gearbox:recommend` to mine your `~/.claude/gearbox-log.jsonl` into a `{task-class × tier}` win-rate table — which tier historically earned the verifier's approval, at what cost, per kind of task. It writes `~/.claude/gearbox-recommendations.md`, and while that file is fresh the SessionStart hook injects it after the routing policy so the orchestrator can weigh it as a *prior*. It is advisory only: a tie-breaker, never an override of the hard floors, max-dimension routing, or the circuit breaker. Cells below a minimum sample count are flagged `low-n` and earn no recommendation, so a thin log cannot skew routing.
 
+## Status line (optional)
+
+Gearbox ships a small composable status-line segment, `bench/statusline.py`, that reads the status-line JSON on stdin and prints `[builder×5 scout×3 architect×1] $2.43` — tier/role counts drawn from the routing log for the current session, with the running cost drawn from the status-line input. It honors `NO_COLOR`.
+
+Plugins cannot register the main status line, so you wire it into your own `~/.claude/settings.json`. `${CLAUDE_PLUGIN_ROOT}` is not set for a user status-line command and the install path is version-pinned, so resolve the latest installed copy at config time:
+
+```bash
+find "$HOME/.claude/plugins/cache/gearbox/gearbox" -maxdepth 3 -path '*/bench/statusline.py' | sort -V | tail -1
+```
+
+**Standalone** — set `statusLine` in `~/.claude/settings.json`:
+
+```json
+{ "statusLine": { "type": "command", "command": "python3 $(find $HOME/.claude/plugins/cache/gearbox/gearbox -maxdepth 3 -path '*/bench/statusline.py' | sort -V | tail -1)" } }
+```
+
+**Composed** — if you already have a status-line script, capture the stdin JSON once and append the segment:
+
+```bash
+# at the top of your existing status-line script:
+input=$(cat)
+segment=$(echo "$input" | python3 "$(find "$HOME/.claude/plugins/cache/gearbox/gearbox" -maxdepth 3 -path '*/bench/statusline.py' | sort -V | tail -1)")
+[ -n "$segment" ] && echo "$segment"
+# … rest of your script …
+```
+
+Zero-dispatch sessions print nothing, so the `[ -n "$segment" ]` guard keeps your status line clean on fresh sessions.
+
+Verify wiring with `/gearbox:doctor` (CHECK 10).
+
 ## Integrating with an existing CLAUDE.md
 
 If you already have delegation, agent, or model-selection rules in your CLAUDE.md, reconcile them before first use:
@@ -98,7 +128,7 @@ If you already have delegation, agent, or model-selection rules in your CLAUDE.m
 
 ## Troubleshooting
 
-Something not working? Run `/gearbox:doctor` first — it checks the ten most common failure modes and tells you the fix. Paste its output into any issue you file.
+Something not working? Run `/gearbox:doctor` first — it checks the eleven most common failure modes and tells you the fix. Paste its output into any issue you file.
 
 ## Known limitations
 
@@ -117,11 +147,14 @@ Something not working? Run `/gearbox:doctor` first — it checks the ten most co
 - **0.4.0** — Learned router (shipped): a *static win-rate prior* mined from `gearbox-log.jsonl` outcomes. `bench/recommend.py` builds a min-sample-guarded `{task-class × tier}` table (verifier approve-rate + mean cost); `/gearbox:recommend` regenerates and prints it; the SessionStart hook injects it (while fresh) after the policy as an advisory prior — a tie-breaker that never overrides the hard floors, max-dimension routing, or the circuit breaker.
 - **0.5.0** — Credibility: exact per-component token cost from the real `usage` split (`cost_estimated` is now false whenever the split is present, billing input / output / cache_read / cache_write at their own rates); `bench/eval.py` scores the router against three modeled baselines — always-Sonnet, always-Opus, and escalate-on-fail.
 - **0.6.0** — Control: a cost/quality aggressiveness knob (routing profiles `cost-conscious` / `balanced` / `quality-first`, plus benchmark-only forced-tier profiles) and opt-in budget caps + threshold warnings (weighted-token per-session and per-task ceilings; ask-before-overrun enforcement; 80% / 100% alerts).
+- **0.7.0** — Visibility: a composable status-line segment (`bench/statusline.py`) showing the session's live tier/role mix + running cost; a richer `bench/dashboard.py` (escalation rate, cost-over-time, prior-vs-actual tier mix); a `SessionEnd` hook writing per-session summaries to `~/.claude/gearbox-sessions.jsonl`; and explicit escalation logging (an `[gearbox-escalation]` marker → `escalation` log field). doctor CHECK 10 covers the status-line segment.
 - **Post-1.0.0** — Revisit once the static prior proves the data is worth modeling: a contextual bandit over `{task-class × model}` with online exploration (plus mined session-transcript signals), auto-regeneration of the prior, and per-project tables keyed by `cwd`.
 
 ## Telemetry
 
-Each Task delegation appends one JSONL line to a single global log at `~/.claude/gearbox-log.jsonl`. Fields: `ts`, `session_id`, `tool_name`, `subagent_type`, `model`, `prompt_head` (first 200 chars), `cwd`, plus post-completion metrics parsed from the tool response — `total_tokens`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `num_turns`, `duration_ms`, `cost_usd`, and `cost_estimated` (false when `cost_usd` is computed exactly from the per-component token split; true when derived from a blended per-model rate because the split was absent). Missing metrics are recorded as null. Each record keeps its `cwd`, so per-project views are a `group by cwd` over one global corpus. The log stays on your machine — it is not sent anywhere.
+Each Task delegation appends one JSONL line to a single global log at `~/.claude/gearbox-log.jsonl`. Fields: `ts`, `session_id`, `tool_name`, `subagent_type`, `model`, `prompt_head` (first 200 chars), `cwd`, plus post-completion metrics parsed from the tool response — `total_tokens`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `num_turns`, `duration_ms`, `cost_usd`, and `cost_estimated` (false when `cost_usd` is computed exactly from the per-component token split; true when derived from a blended per-model rate because the split was absent), plus `escalation` (boolean — true when the dispatch prompt carries an `[gearbox-escalation]` marker, else false), `escalated_from` (source tier, e.g. `"T1"`; null when not an escalation), and `escalated_to` (destination tier; null when not an escalation). Missing metrics are recorded as null. Each record keeps its `cwd`, so per-project views are a `group by cwd` over one global corpus. The log stays on your machine — it is not sent anywhere.
+
+A `SessionEnd` hook also appends a per-session summary record to a separate `~/.claude/gearbox-sessions.jsonl` (fields: `type: "session_summary"`, dispatches, tier mix, cost_usd, approves, rejects, escalations), so dashboards can read a pre-built rollup instead of recomputing it from raw rows.
 
 ## License
 

@@ -9,6 +9,7 @@ import argparse
 import json
 import sys
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 
@@ -44,6 +45,7 @@ def _empty_bucket() -> dict:
         "approve": 0,
         "reject": 0,
         "none": 0,
+        "escalations": 0,
         "cost_sum": 0.0,
         "cost_count": 0,    # non-null cost records
         "total_tokens": 0,
@@ -70,6 +72,9 @@ def aggregate(records: list, group_by: str) -> dict:
         else:
             b["none"] += 1
 
+        if rec.get("escalation"):
+            b["escalations"] += 1
+
         cost = rec.get("cost_usd")
         if cost is not None:
             try:
@@ -92,7 +97,7 @@ def aggregate(records: list, group_by: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Reject-rate
+# Reject-rate / escalation-rate
 # ---------------------------------------------------------------------------
 
 def reject_rate(bucket: dict) -> str:
@@ -108,6 +113,13 @@ def reject_rate(bucket: dict) -> str:
     if verified == 0:
         return "n/a"
     return f"{100.0 * bucket['reject'] / verified:.1f}%"
+
+
+def esc_rate(bucket: dict) -> str:
+    """Return escalation rate as a percentage string, or 'n/a' when no dispatches."""
+    if bucket["dispatches"] == 0:
+        return "n/a"
+    return f"{100.0 * bucket['escalations'] / bucket['dispatches']:.1f}%"
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +143,7 @@ def _total_bucket(buckets: dict) -> dict:
         total["approve"] += b["approve"]
         total["reject"] += b["reject"]
         total["none"] += b["none"]
+        total["escalations"] += b["escalations"]
         total["cost_sum"] += b["cost_sum"]
         total["cost_count"] += b["cost_count"]
         total["total_tokens"] += b["total_tokens"]
@@ -151,6 +164,7 @@ def _print_table(buckets: dict, group_label: str) -> bool:
             b["reject"],
             b["none"],
             reject_rate(b),
+            esc_rate(b),
             _fmt_cost(b["cost_sum"]),
             _fmt_mean(b),
             b["total_tokens"],
@@ -164,6 +178,7 @@ def _print_table(buckets: dict, group_label: str) -> bool:
         total["reject"],
         total["none"],
         reject_rate(total),
+        esc_rate(total),
         _fmt_cost(total["cost_sum"]),
         _fmt_mean(total),
         total["total_tokens"],
@@ -176,6 +191,7 @@ def _print_table(buckets: dict, group_label: str) -> bool:
         "reject",
         "none",
         "reject-rate",
+        "esc-rate",
         "cost_usd",
         "mean_cost",
         "total_tokens",
@@ -201,6 +217,135 @@ def _print_table(buckets: dict, group_label: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Cost over time  (--over-time)
+# ---------------------------------------------------------------------------
+
+def _day_buckets(records: list) -> dict:
+    """Return {date_iso: {"dispatches":int, "cost_sum":float, "cost_count":int,
+    "any_estimated":bool}} sorted ascending by date.
+
+    Records missing or invalid ts are silently skipped.
+    """
+    buckets: dict = defaultdict(lambda: {
+        "dispatches": 0,
+        "cost_sum": 0.0,
+        "cost_count": 0,
+        "any_estimated": False,
+    })
+    for rec in records:
+        ts = rec.get("ts")
+        if ts is None:
+            continue
+        try:
+            day = datetime.fromtimestamp(float(ts)).date().isoformat()
+        except (TypeError, ValueError, OSError):
+            continue
+        b = buckets[day]
+        b["dispatches"] += 1
+        cost = rec.get("cost_usd")
+        if cost is not None:
+            try:
+                b["cost_sum"] += float(cost)
+                b["cost_count"] += 1
+            except (TypeError, ValueError):
+                pass
+        if rec.get("cost_estimated"):
+            b["any_estimated"] = True
+    return dict(sorted(buckets.items()))
+
+
+def print_over_time(records: list) -> None:
+    """Print a per-day cost table, sorted ascending by date."""
+    buckets = _day_buckets(records)
+    if not buckets:
+        print("No timestamped records found.")
+        return
+
+    rows = []
+    for day, b in buckets.items():
+        if b["cost_count"] == 0:
+            mean_str = "n/a"
+        else:
+            mean_str = _fmt_cost(b["cost_sum"] / b["cost_count"])
+        rows.append((day, b["dispatches"], _fmt_cost(b["cost_sum"]), mean_str))
+
+    headers = ("date", "dispatches", "cost_usd", "mean_cost")
+    cols = list(zip(headers, *rows))
+    widths = [max(len(str(cell)) for cell in col) for col in cols]
+
+    sep = "  "
+    header_line = sep.join(str(h).ljust(widths[i]) for i, h in enumerate(headers))
+    print("\n-- cost over time --")
+    print(header_line)
+    print("-" * len(header_line))
+    for row in rows:
+        print(sep.join(str(cell).ljust(widths[j]) for j, cell in enumerate(row)))
+
+    if any(b["any_estimated"] for b in buckets.values()):
+        print()
+        print("* costs are estimate-derived (blended per-model rates), not billed figures")
+
+
+# ---------------------------------------------------------------------------
+# Prior vs actual tier mix  (--prior)
+# ---------------------------------------------------------------------------
+
+def print_prior(records: list) -> None:
+    """Print a table comparing actual tier mix per task-class to the prior rec."""
+    # Import lazily to keep the default path stdlib-only.
+    try:
+        from recommend import bucket_task_class, recommended_tiers
+    except ImportError as exc:
+        print(f"Cannot import recommend.py: {exc}")
+        return
+
+    # Build actual tier mix per task-class.
+    class_tiers: dict = defaultdict(lambda: defaultdict(int))
+    for rec in records:
+        prompt_head = rec.get("prompt_head") or ""
+        task_class = bucket_task_class(prompt_head)
+        tier = rec.get("tier") or "(unknown)"
+        class_tiers[task_class][tier] += 1
+
+    # Get recommended tier per class from recommend.py (single source of truth).
+    rec_tiers = recommended_tiers(records)
+
+    # Determine class order: use CLASS_ORDER from recommend where possible,
+    # then append any extra classes seen in records.
+    try:
+        from recommend import CLASS_ORDER
+        ordered_classes = [c for c in CLASS_ORDER if c in class_tiers]
+        ordered_classes += [c for c in sorted(class_tiers) if c not in ordered_classes]
+    except ImportError:
+        ordered_classes = sorted(class_tiers)
+
+    rows = []
+    for tc in ordered_classes:
+        tier_counts = class_tiers[tc]
+        # Format actual mix: "T0×12 T1×3" sorted by tier name.
+        mix_parts = [f"{t}×{n}" for t, n in sorted(tier_counts.items())]
+        mix_str = " ".join(mix_parts) if mix_parts else "(none)"
+        prior_rec = rec_tiers.get(tc) or "—"
+        rows.append((tc, mix_str, prior_rec))
+
+    if not rows:
+        print("No records to show for prior comparison.")
+        return
+
+    headers = ("task-class", "actual tier mix", "prior rec")
+    cols = list(zip(headers, *rows))
+    widths = [max(len(str(cell)) for cell in col) for col in cols]
+
+    sep = "  "
+    header_line = sep.join(str(h).ljust(widths[i]) for i, h in enumerate(headers))
+    print("\n-- prior vs actual tier mix --")
+    print(header_line)
+    print("-" * len(header_line))
+    for row in rows:
+        print(sep.join(str(cell).ljust(widths[j]) for j, cell in enumerate(row)))
+
+
+# ---------------------------------------------------------------------------
 # Selfcheck
 # ---------------------------------------------------------------------------
 
@@ -208,21 +353,37 @@ def selfcheck() -> None:
     """Assert-based tests on aggregation and reject-rate logic.  Exits 0 on
     success, non-zero on assertion failure."""
 
-    # --- synthetic records covering all verdict/cost cases ---
+    # --- synthetic records covering all verdict/cost/escalation cases ---
+    # ts values: 2024-01-15 and 2024-01-16 in UTC (well-defined epoch offsets)
+    # 2024-01-15 00:30:00 UTC → 1705275000
+    # 2024-01-16 00:30:00 UTC → 1705361400
+    DAY1_TS = 1705275000
+    DAY2_TS = 1705361400
+
     recs = [
-        # T1: 1 approve, 1 reject, cost 0.10 + 0.20, tokens 1000+2000
+        # T1: 1 approve, 1 reject, cost 0.10 + 0.20, tokens 1000+2000; 1 escalation
         {"tier": "T1", "cwd": "/proj/a", "verdict": "approve", "cost_usd": 0.10,
-         "cost_estimated": False, "total_tokens": 1000},
+         "cost_estimated": False, "total_tokens": 1000,
+         "escalation": True,  "escalated_from": None, "escalated_to": "T2",
+         "ts": DAY1_TS, "prompt_head": "implement the login endpoint"},
         {"tier": "T1", "cwd": "/proj/a", "verdict": "reject",  "cost_usd": 0.20,
-         "cost_estimated": True,  "total_tokens": 2000},
+         "cost_estimated": True,  "total_tokens": 2000,
+         "escalation": False, "escalated_from": None, "escalated_to": None,
+         "ts": DAY1_TS, "prompt_head": "implement auth"},
         # T2: 2 approve, 0 reject, cost 0.05 (other has null cost), tokens 500
         {"tier": "T2", "cwd": "/proj/b", "verdict": "approve", "cost_usd": 0.05,
-         "cost_estimated": False, "total_tokens": 500},
+         "cost_estimated": False, "total_tokens": 500,
+         "escalation": False, "escalated_from": None, "escalated_to": None,
+         "ts": DAY2_TS, "prompt_head": "fix the bug"},
         {"tier": "T2", "cwd": "/proj/b", "verdict": "approve", "cost_usd": None,
-         "cost_estimated": False, "total_tokens": 300},
-        # T0: empty verdict (unverified scout), no cost, tokens 100
+         "cost_estimated": False, "total_tokens": 300,
+         "escalation": False, "escalated_from": None, "escalated_to": None,
+         "ts": DAY2_TS, "prompt_head": "read the config"},
+        # T0: empty verdict (unverified scout), no cost, tokens 100; 1 escalation
         {"tier": "T0", "cwd": "/proj/a", "verdict": "",         "cost_usd": None,
-         "cost_estimated": False, "total_tokens": 100},
+         "cost_estimated": False, "total_tokens": 100,
+         "escalation": True,  "escalated_from": None, "escalated_to": "T1",
+         "ts": None, "prompt_head": "summarize the README"},
     ]
 
     # --- aggregate by tier ---
@@ -234,6 +395,7 @@ def selfcheck() -> None:
     assert t0["approve"] == 0
     assert t0["reject"] == 0
     assert t0["none"] == 1
+    assert t0["escalations"] == 1
     assert t0["cost_sum"] == 0.0
     assert t0["cost_count"] == 0
     assert t0["total_tokens"] == 100
@@ -244,6 +406,7 @@ def selfcheck() -> None:
     assert t1["approve"] == 1
     assert t1["reject"] == 1
     assert t1["none"] == 0
+    assert t1["escalations"] == 1
     assert abs(t1["cost_sum"] - 0.30) < 1e-9, f"T1 cost_sum: {t1['cost_sum']}"
     assert t1["cost_count"] == 2
     assert t1["total_tokens"] == 3000
@@ -253,6 +416,7 @@ def selfcheck() -> None:
     assert t2["dispatches"] == 2
     assert t2["approve"] == 2
     assert t2["reject"] == 0
+    assert t2["escalations"] == 0
     assert abs(t2["cost_sum"] - 0.05) < 1e-9, f"T2 cost_sum: {t2['cost_sum']}"
     assert t2["cost_count"] == 1   # null excluded from count
     assert t2["total_tokens"] == 800
@@ -262,6 +426,18 @@ def selfcheck() -> None:
     assert reject_rate(t0) == "n/a", "T0 no verified dispatches → n/a"
     assert reject_rate(t1) == "50.0%", f"T1 reject-rate: {reject_rate(t1)}"
     assert reject_rate(t2) == "0.0%",  f"T2 reject-rate: {reject_rate(t2)}"
+
+    # --- esc_rate ---
+    assert esc_rate(t0) == "100.0%", f"T0 esc-rate: {esc_rate(t0)}"
+    assert esc_rate(t1) == "50.0%",  f"T1 esc-rate: {esc_rate(t1)}"
+    assert esc_rate(t2) == "0.0%",   f"T2 esc-rate: {esc_rate(t2)}"
+    # zero-dispatch bucket edge case
+    empty = _empty_bucket()
+    assert esc_rate(empty) == "n/a", "zero dispatches → n/a"
+    # zero-escalation bucket
+    no_esc = _empty_bucket()
+    no_esc["dispatches"] = 3
+    assert esc_rate(no_esc) == "0.0%", f"zero escalations: {esc_rate(no_esc)}"
 
     # --- mean cost ---
     assert _fmt_mean(t0) == "n/a"
@@ -276,6 +452,7 @@ def selfcheck() -> None:
     assert proj_a["approve"] == 1
     assert proj_a["reject"] == 1
     assert proj_a["none"] == 1
+    assert proj_a["escalations"] == 2  # T1 approve escalated + T0 escalated
 
     # --- total bucket ---
     total = _total_bucket(by_tier)
@@ -283,10 +460,63 @@ def selfcheck() -> None:
     assert total["approve"] == 3
     assert total["reject"] == 1
     assert total["none"] == 1
+    assert total["escalations"] == 2
     assert abs(total["cost_sum"] - 0.35) < 1e-9, f"total cost_sum: {total['cost_sum']}"
     assert total["cost_count"] == 3
     assert total["total_tokens"] == 3900
     assert total["any_estimated"]
+
+    # --- day bucketing (_day_buckets) ---
+    # DAY1_TS → two records (T1 approve + T1 reject); DAY2_TS → two records (T2 x2).
+    # T0 record has ts=None and must be skipped.
+    day_b = _day_buckets(recs)
+    assert len(day_b) == 2, f"expected 2 days, got: {list(day_b.keys())}"
+    days_sorted = sorted(day_b.keys())
+    d1, d2 = days_sorted[0], days_sorted[1]
+    assert d1 < d2, "days must be sorted ascending"
+    assert day_b[d1]["dispatches"] == 2, f"day1 dispatches: {day_b[d1]['dispatches']}"
+    assert abs(day_b[d1]["cost_sum"] - 0.30) < 1e-9, f"day1 cost_sum: {day_b[d1]['cost_sum']}"
+    assert day_b[d1]["cost_count"] == 2
+    assert day_b[d2]["dispatches"] == 2, f"day2 dispatches: {day_b[d2]['dispatches']}"
+    assert abs(day_b[d2]["cost_sum"] - 0.05) < 1e-9, f"day2 cost_sum: {day_b[d2]['cost_sum']}"
+    assert day_b[d2]["cost_count"] == 1   # one null cost on day2
+    # missing-ts record was skipped (only 4 total, not 5)
+    assert sum(b["dispatches"] for b in day_b.values()) == 4, \
+        "null-ts record must be skipped"
+
+    # --- prior vs actual: bucket_task_class and recommended_tiers imported from recommend ---
+    try:
+        from recommend import bucket_task_class, recommended_tiers
+    except ImportError:
+        # recommend.py not on path in some environments — skip these assertions
+        print("selfcheck OK (recommend import skipped)")
+        sys.exit(0)
+
+    # Records in recs:
+    # "implement the login endpoint" → implement/fix; tier T1
+    # "implement auth"              → implement/fix; tier T1
+    # "fix the bug"                 → implement/fix; tier T2
+    # "read the config"             → explore/read;  tier T2
+    # "summarize the README"        → explore/read;  tier T0
+    assert bucket_task_class("implement the login endpoint") == "implement/fix"
+    assert bucket_task_class("read the config") == "explore/read"
+
+    # Build a bigger set so recommended_tiers can produce a winner (n >= K=5).
+    many_recs = (
+        [{"tier": "T1", "prompt_head": "implement feature", "verdict": "approve",
+          "cost_usd": 0.01}] * 4
+        + [{"tier": "T1", "prompt_head": "implement feature", "verdict": "reject",
+            "cost_usd": 0.01}]
+    )
+    rt = recommended_tiers(many_recs)
+    assert rt.get("implement/fix") == "T1", \
+        f"recommended_tiers: expected T1 for implement/fix, got {rt}"
+
+    # With only our 5-record recs fixture, implement/fix has T1×2 T2×1 — all below K=5,
+    # so recommended_tiers returns None for every class.
+    rt_small = recommended_tiers(recs)
+    assert rt_small.get("implement/fix") is None, \
+        f"small sample → None expected, got {rt_small}"
 
     print("selfcheck OK")
     sys.exit(0)
@@ -310,6 +540,16 @@ def main() -> None:
         "--by-project",
         action="store_true",
         help="Group rows by project cwd instead of tier.",
+    )
+    parser.add_argument(
+        "--over-time",
+        action="store_true",
+        help="Show a per-day cost breakdown table after the main table.",
+    )
+    parser.add_argument(
+        "--prior",
+        action="store_true",
+        help="Show actual tier mix vs routing prior recommendation per task-class.",
     )
     parser.add_argument(
         "--selfcheck",
@@ -337,6 +577,12 @@ def main() -> None:
     if any_estimated:
         print()
         print("* costs are estimate-derived (blended per-model rates), not billed figures")
+
+    if args.over_time:
+        print_over_time(records)
+
+    if args.prior:
+        print_prior(records)
 
 
 if __name__ == "__main__":
