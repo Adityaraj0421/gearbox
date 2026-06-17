@@ -41,7 +41,10 @@ DEFAULT_MAX_COST = 2.00
 POLICIES: dict = {
     "live":          "balanced",
     "always-sonnet": "always-t1",
-    "always-opus":   "always-t2",
+    # always-t2 routes to the read-only architect (can't edit under a forced
+    # profile); use the edit-capable builder@opus profile so always-Opus is a
+    # faithful measured baseline on editing tasks.
+    "always-opus":   "always-opus-build",
 }
 
 # Verdict regex — matches inject-routing.py / log-routing.py _VERDICT_RE.
@@ -147,6 +150,23 @@ _TIER_FAMILY: dict = {
     "T2": "opus",
 }
 
+# A forced policy pins every task to one tier regardless of the task's natural
+# tier, so the binding check (and the row's effective tier) must use the FORCED
+# tier, not the task tier.  `live` (balanced) routes naturally → use task tier.
+_POLICY_FORCED_TIER: dict = {
+    "always-sonnet": "T1",   # always-t1 → builder (sonnet)
+    "always-opus":   "T2",   # always-opus-build → builder on opus
+}
+
+
+def expected_tier(policy: str, task_tier: str) -> str:
+    """The tier a row should bind to under `policy`.
+
+    Forced policies pin a tier (always-sonnet→T1, always-opus→T2); the live
+    router routes naturally, so its expected tier is the task's own tier.
+    """
+    return _POLICY_FORCED_TIER.get(policy, task_tier)
+
 
 def policy_bound(model_usage: dict, expected_tier: str) -> bool:
     """Return True if the expected tier's model family ran.
@@ -205,7 +225,9 @@ def build_row(
     cost_usd (exact; null→0), acceptable (bool), total_tokens (optional).
     Extra fields (policy, bound, ts, etc.) are preserved but eval ignores them.
     """
-    tier = task["tier"]
+    # Effective tier = the tier this policy actually exercised (forced tier for
+    # always-*, the task's own tier for live), not the task's natural tier.
+    tier = expected_tier(policy, task["tier"])
 
     if bound:
         subagent_type = tier_to_agent(tier)
@@ -217,12 +239,19 @@ def build_row(
         subagent_type = "(unbound)"
         model = ""
 
+    usage = env_data.get("usage") or {}
+    total_tokens = sum(
+        int(usage.get(k) or 0)
+        for k in ("input_tokens", "output_tokens",
+                  "cache_read_input_tokens", "cache_creation_input_tokens")
+    ) or None
+
     return {
         # --- fields eval.py scores ---
         "subagent_type": subagent_type,
         "model":         model,
         "cost_usd":      env_data.get("total_cost_usd"),
-        "total_tokens":  None,   # claude -p envelope doesn't carry per-task tokens
+        "total_tokens":  total_tokens,
         "acceptable":    accept_ok,
         "cost_estimated": False,
         # --- extra fields eval ignores ---
@@ -304,6 +333,10 @@ def run_one(task: dict, policy: str, workdir: Path, timeout: int = 600) -> dict:
         "GEARBOX_PROFILE": POLICIES[policy],
         "CLAUDE_PROJECT_DIR": str(workdir),
     }
+    # Load the repo-under-test's plugin (overrides any same-named installed copy),
+    # so the benchmark measures THIS checkout's routing/profiles — including the
+    # benchmark-only always-opus-build profile that need not be installed.
+    repo_root = Path(__file__).resolve().parent.parent
     result = subprocess.run(
         [
             "claude", "-p", prompt,
@@ -311,6 +344,7 @@ def run_one(task: dict, policy: str, workdir: Path, timeout: int = 600) -> dict:
             "--output-format", "json",
             "--permission-mode", "bypassPermissions",
             "--add-dir", str(workdir),
+            "--plugin-dir", str(repo_root),
         ],
         cwd=str(workdir),
         env=env,
@@ -380,11 +414,20 @@ def aggregate(out_path: Path, rows: list) -> None:
             f" | mean_cost=${mean_cost:.4f} | accept={accept_rate:.0%}"
         )
 
-    # --- full scorecard via eval.py ---
-    print("\n--- eval.py scorecard (all written rows) ---")
-    all_rows = eval_mod.load_labeled_rows(out_path)
-    totals = eval_mod.compute_policy_totals(all_rows)
-    eval_mod.print_policy_comparison(totals)
+    # --- eval.py MODELED scorecard, scored on the LIVE-policy rows only ---
+    # eval.py models always-X baselines as (tokens × per-tier rate) from a single
+    # router trace.  Feeding it the mixed forced-policy rows would be nonsense, so
+    # score only the `live` rows (the real router) — then the modeled always-sonnet
+    # / always-opus numbers can be cross-checked against the MEASURED per-policy
+    # means above (the credibility point of R1-live: do the models match reality?).
+    live_rows = [r for r in eval_mod.load_labeled_rows(out_path)
+                 if r.get("policy") == "live"]
+    if live_rows:
+        print("\n--- eval.py MODELED baselines (from live-policy rows; "
+              "cross-check vs MEASURED means above) ---")
+        eval_mod.print_policy_comparison(eval_mod.compute_policy_totals(live_rows))
+    else:
+        print("\n(no live-policy rows — skipping modeled cross-check)")
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +560,31 @@ def selfcheck() -> None:
     t2_task = {"id": "t2-test", "tier": "T2", "prompt": "...", "accept": "true"}
     row_t2 = build_row(t2_task, "always-opus", env_data, accept_ok=True, bound=True)
     assert eval_mod._derive_tier(row_t2) == "T2"
+
+    # --- expected_tier: forced policies pin the tier; live uses the task tier ---
+    assert expected_tier("always-sonnet", "T2") == "T1"
+    assert expected_tier("always-opus", "T0") == "T2"
+    assert expected_tier("live", "T2") == "T2"
+    assert expected_tier("live", "T0") == "T0"
+
+    # A forced policy labels the FORCED tier, not the task's natural tier:
+    # a T0 task under always-opus is an opus (T2) run.  (Regression for the
+    # bound false-negative the first live pass exposed.)
+    t0_task = {"id": "t0-x", "tier": "T0", "prompt": "...", "accept": "true"}
+    row_forced = build_row(t0_task, "always-opus", env_data, accept_ok=True, bound=True)
+    assert eval_mod._derive_tier(row_forced) == "T2", \
+        f"always-opus T0-task should label T2, got {eval_mod._derive_tier(row_forced)!r}"
+
+    # always-sonnet on a T2 task → bind on sonnet (the forced tier), not opus
+    assert policy_bound(mu_sonnet_haiku, expected_tier("always-sonnet", "T2")) is True
+    assert policy_bound(mu_opus, expected_tier("always-sonnet", "T2")) is False
+
+    # total_tokens summed from the envelope usage split
+    env_tok = {**env_data, "usage": {
+        "input_tokens": 1000, "output_tokens": 200,
+        "cache_read_input_tokens": 50, "cache_creation_input_tokens": 10}}
+    row_tok = build_row(t1_task, "live", env_tok, accept_ok=True, bound=True)
+    assert row_tok["total_tokens"] == 1260, f"total_tokens: {row_tok['total_tokens']}"
 
     # --- estimate_cost ---
     assert abs(estimate_cost(9) - 1.08) < 1e-9, \
@@ -669,7 +737,10 @@ def main() -> None:
                 spent += run_cost
 
                 accept_ok = run_accept(task["accept"], workdir)
-                bound = policy_bound(env_data.get("modelUsage", {}), task["tier"])
+                bound = policy_bound(
+                    env_data.get("modelUsage", {}),
+                    expected_tier(policy, task["tier"]),
+                )
 
                 row = build_row(task, policy, env_data, accept_ok, bound)
                 out_f.write(json.dumps(row, ensure_ascii=False) + "\n")

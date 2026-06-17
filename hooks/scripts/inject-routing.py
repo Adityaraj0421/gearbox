@@ -28,6 +28,7 @@ _KNOWN_PROFILES = {
     "always-t0",
     "always-t1",
     "always-t2",
+    "always-opus-build",
 }
 
 
@@ -73,6 +74,10 @@ def profile_block(name: str) -> str:
         "always-t0": (0, "gearbox:scout / gearbox:grunt", "haiku"),
         "always-t1": (1, "gearbox:builder", "sonnet"),
         "always-t2": (2, "gearbox:architect", "opus"),
+        # Benchmark-only: an edit-capable opus baseline. always-t2 routes to the
+        # read-only architect (can't complete editing tasks under a forced
+        # profile), so the measured "always-Opus" policy uses the builder on opus.
+        "always-opus-build": (2, "gearbox:builder", "opus"),
     }
     if name in tier_map:
         n, agent, model = tier_map[name]
@@ -174,6 +179,10 @@ def _selfcheck() -> None:
     t0 = profile_block("always-t0")
     assert "BENCHMARK MODE: always-T0" in t0
     assert "haiku" in t0
+
+    ob = profile_block("always-opus-build")
+    assert "BENCHMARK MODE: always-T2" in ob
+    assert "gearbox:builder" in ob and "opus" in ob
 
     print("inject-routing selfcheck: OK")
 

@@ -33,8 +33,14 @@ cost, and cost-saved %.  Three baselines are **modeled offline** using the
 same token counts the router recorded × per-tier blended rates (2026-06:
 haiku $1.5/M, sonnet $5.0/M, opus $8.0/M):
 
-- **always-sonnet** — every task dispatched to sonnet regardless of complexity.
-- **always-opus** — every task dispatched to opus (quality ceiling).
+- **always-sonnet** — every task dispatched to sonnet regardless of complexity
+  (measured via the `always-t1` profile → `gearbox:builder`).
+- **always-opus** — every task dispatched to opus (quality ceiling). Measured via
+  the `always-opus-build` profile (`gearbox:builder` on opus), **not** `always-t2`:
+  `always-t2` routes to the read-only `gearbox:architect`, which can't complete
+  editing tasks under a forced profile, so it would understate opus on a structural
+  technicality. `always-opus-build` uses the edit-capable builder so the baseline is
+  faithful.
 - **escalate-on-fail** — starts at T0, escalates on failure; pays wasted
   cheaper attempts.  This is the router's core value prop: skip straight to
   the right tier.
