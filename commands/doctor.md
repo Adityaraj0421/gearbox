@@ -252,6 +252,62 @@ EOF
 
 ---
 
+## CHECK 10 — STATUS-LINE SEGMENT
+
+```bash
+python3 - "${CLAUDE_PLUGIN_ROOT}" <<'PY'
+import subprocess, sys, pathlib, json, re
+
+root = sys.argv[1] if len(sys.argv) > 1 else ''
+if not root:
+    print("NO_PLUGIN_ROOT")
+    sys.exit()
+
+script = pathlib.Path(root) / 'bench' / 'statusline.py'
+if not script.exists():
+    print(f"SCRIPT_MISSING:{script}")
+    sys.exit()
+
+# Run --selfcheck
+result = subprocess.run(
+    ["python3", str(script), "--selfcheck"],
+    capture_output=True, text=True, timeout=10
+)
+if result.returncode != 0:
+    print(f"SELFCHECK_FAIL:{result.stdout.strip()}{result.stderr.strip()}")
+    sys.exit()
+
+# Check wiring in ~/.claude/settings.json
+settings = pathlib.Path.home() / ".claude" / "settings.json"
+wired = False
+if settings.exists():
+    try:
+        text = settings.read_text()
+        data = json.loads(text)
+        sl = data.get("statusLine") or ""
+        if "statusline.py" in sl or "gearbox" in sl.lower():
+            wired = True
+    except Exception:
+        # Fall back to raw grep if JSON parse fails
+        text = settings.read_text()
+        if re.search(r'statusline\.py|gearbox', text, re.IGNORECASE):
+            wired = True
+
+print("WIRED" if wired else "NOT_WIRED")
+PY
+```
+
+Evaluate:
+- Output is `SCRIPT_MISSING:...` → **FAIL**: "bench/statusline.py not found under plugin root — reinstall the plugin"
+- Output is `SELFCHECK_FAIL:...` → **FAIL**: quoting the error output
+- Output is `NO_PLUGIN_ROOT` → **FAIL**: "plugin root not set — see CHECK 0"
+- Output is `WIRED` → **PASS**: "status-line segment available and wired into settings.json"
+- Output is `NOT_WIRED` → **PASS**: "status-line segment available, not wired — see README to add it to settings.json (optional)"
+
+This check never FAILs due to missing wiring; wiring is optional and user-managed.
+
+---
+
 ## FINAL OUTPUT
 
 After completing all checks, print this table and nothing else before it:
@@ -271,6 +327,7 @@ Gearbox doctor report
  7  | Legacy install conflict  | ...    | ...
  8  | Version freshness        | ...    | ...
  9  | Routing prior artifact   | ...    | ...
+10  | Status-line segment      | ...    | ...
 ─────────────────────────────────────────────────────────────────────────
 ```
 
