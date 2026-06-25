@@ -1,6 +1,6 @@
 # Gearbox
 
-Gearbox is a Claude Code plugin that automatically routes subagent delegations to the cheapest model tier that can handle the work — haiku for search and mechanical edits, sonnet for standard implementation, opus for hard architectural problems. It adds an escalation ladder so a cheap agent that gets stuck hands off to a more expensive one, and a verifier gate that catches gaming patterns (like reward-hacking an impossible test) before bad results are accepted. JSONL telemetry logs every delegation for future analysis.
+Gearbox is a Claude Code plugin that automatically routes subagent delegations to the cheapest model tier that can handle the work — haiku for search and mechanical edits, sonnet for standard implementation, opus for hard architectural problems. It adds an escalation ladder so a cheap agent that gets stuck hands off to a more expensive one, and a verifier gate that catches gaming patterns (like reward-hacking an impossible test) before bad results are accepted. JSONL telemetry logs every delegation and its outcomes — which tier ran it, whether a named agent or a generic proxy handled it, verifier verdicts, and escalations — so you can measure how your routing actually behaves.
 
 ## Install
 
@@ -62,25 +62,32 @@ Something not working? Run `/gearbox:doctor` first — it checks the ten most co
 - **Routing policy context cost:** The routing policy is injected each session start (~2.5KB context cost).
 - **Agent namespacing:** Gearbox agents install as `gearbox:scout`, `gearbox:grunt`, `gearbox:builder`, `gearbox:architect`, and `gearbox:verifier`. Reference them by these full names in prompts and routing rules.
 
-## Roadmap
+## Changelog / Roadmap
 
-- **0.2.0** — PreToolUse hook auto-captures `git status --short` BASELINE before every T1/T2 delegation; verifier always receives it, guaranteed rather than instructed.
-- **0.3.0** — Learned router trained on `gearbox-log.jsonl` outcomes: a contextual bandit over `{task-type × model}` pairs, replacing the static rubric with a policy that improves with use.
+- **0.2.0 (current)** — Outcome logging. Every delegation now records `is_named_tier` (a `gearbox:` tier agent handled it) and `fallback` (a generic `general-purpose`/`Explore` proxy handled it instead). A `SubagentStop` hook logs `gearbox:verifier` `approve`/`reject` verdicts, and the orchestrator logs tier escalations. `bench/analyze-log.py` now reports a hard fallback rate, the verifier approve/reject ratio, and escalation frequency; `/gearbox:doctor` gains CHECK 9 to confirm the new schema is live.
+- **Planned** — PreToolUse hook auto-captures `git status --short` BASELINE before every T1/T2 delegation, so the verifier always receives it (guaranteed rather than instructed); the same enforcement for escalation logging.
+- **0.3.0** — Learned router trained on `gearbox-log.jsonl` outcomes: a contextual bandit over `{task-type × model}` pairs, replacing the static rubric with a policy that improves with use. The 0.2.0 outcome fields are the reward signal it needs.
 
 ## Telemetry
 
-Each Task delegation appends one JSONL line to `.claude/gearbox-log.jsonl` in your project. Fields: `ts`, `session_id`, `subagent_type`, `model`, `prompt_head` (first 200 chars), `cwd`. The log stays in your project — it is not sent anywhere.
+Each Task delegation appends one JSONL line to `.claude/gearbox-log.jsonl` in your project. Delegation fields: `ts`, `session_id`, `tool_name`, `subagent_type`, `is_named_tier`, `fallback`, `model`, `prompt_head` (first 200 chars), `cwd`.
+
+As of 0.2.0 the log also records **outcome events** on their own lines:
+- `{"event":"verdict","verdict":"approve"|"reject", ...}` — written by a `SubagentStop` hook when `gearbox:verifier` finishes.
+- `{"event":"escalation","from_tier","to_tier","reason", ...}` — written by the orchestrator each time it escalates a tier.
+
+The log stays in your project — it is not sent anywhere.
 
 ## Measuring your routing
 
-`bench/analyze-log.py` aggregates your `gearbox-log.jsonl` files and reports the tier split (haiku/sonnet/opus), the agent distribution, verifier coverage, and date range — with an independent recount that asserts its own totals before printing.
+`bench/analyze-log.py` aggregates your `gearbox-log.jsonl` files and reports the tier split (haiku/sonnet/opus), the agent distribution, verifier coverage, the date range, and — as of 0.2.0 — an **outcomes** section: a hard fallback rate (named `gearbox:` tier vs generic proxy, counted from the `fallback`/`is_named_tier` fields rather than guessed), the verifier approve/reject ratio, and escalation frequency. An independent recount asserts its own totals before printing.
 
 ```bash
 python3 bench/analyze-log.py          # globs ~ for every .claude/gearbox-log.jsonl
 # or pass explicit paths:  python3 bench/analyze-log.py path/to/.claude/gearbox-log.jsonl
 ```
 
-Note: the log currently captures routing **decisions** (which agent, which model) but not **outcomes** — there is no escalation, verifier-verdict, or fallback field yet, so the analyzer can show *how* work was routed but not whether each route was *right*. Capturing outcomes is the 0.2 work that turns this from a description into a measurement.
+Two caveats, both honest gaps: verdict capture depends on your Claude Code version surfacing the verifier's output to `SubagentStop` (if no `{"event":"verdict"}` lines ever appear, it is inactive on your version, and the verdict stays a manual field); escalation logging is instructed in the routing policy, not enforced, so escalation counts are a floor. The new fields only appear after you restart the session so the updated hook loads — confirm with `/gearbox:doctor` (CHECK 9).
 
 ## License
 

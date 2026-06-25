@@ -1,0 +1,9 @@
+# Social-media / post drafts — never commit these (local only, for posting)
+POST-*.md
+
+# Python build artifacts
+__pycache__/
+*.pyc
+
+# Stray local logs
+firebase-debug.log
