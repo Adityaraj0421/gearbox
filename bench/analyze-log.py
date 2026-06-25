@@ -11,6 +11,14 @@ aggregates one or more of those logs and reports how work was routed:
   3. distribution by agent (raw subagent_type, and mapped to Gearbox role)
   4. verifier coverage: verifier runs vs T1/T2 work
   5. whether any outcome fields (escalation / verdict / fallback) are present
+  6. outcomes (0.2.0): a HARD fallback rate (named gearbox: tier vs generic
+     proxy, from the fallback/is_named_tier fields), the verifier approve/reject
+     ratio, and escalation frequency, read from {"event":"verdict"} and
+     {"event":"escalation"} records
+
+Two record shapes coexist in a log: delegation records (one per Task/Agent
+call) and outcome-event records ({"event": "verdict"|"escalation"}). Delegation
+stats are computed over the former only; events are tallied separately.
 
 It is written to survive the schema drift that already exists in real logs:
   * old lines predate the `tool_name` field -- never required here
@@ -34,7 +42,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 KNOWN_FIELDS = {"ts", "session_id", "tool_name", "subagent_type", "model",
-                "prompt_head", "cwd"}
+                "prompt_head", "cwd", "is_named_tier", "fallback"}
 # Fields that would carry an escalation/outcome signal if Gearbox logged one.
 SIGNAL_FIELDS = {"escalation", "escalated", "verdict", "outcome", "result",
                  "fallback", "tier", "from_tier", "to_tier", "verify",
@@ -96,13 +104,23 @@ def load(paths):
     return rows, bad
 
 
+EVENT_KINDS = ("verdict", "escalation")
+
+
+def is_event(r):
+    return r.get("event") in EVENT_KINDS
+
+
 def independent_recount(paths):
     """Second, deliberately separate pass over the same files.
 
-    Re-reads from disk with its own minimal parser and tallies model values, so
-    a bug in the primary loader/normaliser cannot hide. Returns (total, models).
+    Re-reads from disk with its own minimal parser, partitions event records
+    from delegations the same way the primary pass does, and tallies delegation
+    model values, so a bug in the primary loader/partitioner cannot hide.
+    Returns (n_delegations, models, n_events).
     """
-    total = 0
+    delegs = 0
+    events = 0
     models = Counter()
     for p in paths:
         try:
@@ -111,14 +129,17 @@ def independent_recount(paths):
                     if not line.strip():
                         continue
                     try:
-                        m = json.loads(line).get("model")
+                        r = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    total += 1
-                    models[(m or "").strip() or "(empty)"] += 1
+                    if r.get("event") in EVENT_KINDS:
+                        events += 1
+                        continue
+                    delegs += 1
+                    models[(r.get("model") or "").strip() or "(empty)"] += 1
         except OSError:
             pass
-    return total, models
+    return delegs, models, events
 
 
 def pct(n, d):
@@ -146,16 +167,20 @@ def main():
               "(looked for ~/**/.claude/gearbox-log.jsonl).")
         return 0
 
-    rows, bad = load(paths)
+    all_rows, bad = load(paths)
+    events = [r for r in all_rows if is_event(r)]
+    rows = [r for r in all_rows if not is_event(r)]   # delegation records only
     total = len(rows)
     print("=" * 60)
-    print(f"GEARBOX ROUTING LOG ANALYSIS — {len(paths)} file(s), "
-          f"{total} delegations")
+    hdr = f"GEARBOX ROUTING LOG ANALYSIS — {len(paths)} file(s), {total} delegations"
+    if events:
+        hdr += f", {len(events)} outcome event(s)"
+    print(hdr)
     if bad:
         print(f"(skipped {bad} malformed line(s))")
     print("=" * 60)
 
-    if total == 0:
+    if total == 0 and not events:
         print("\nNo delegations recorded yet.")
         return 0
 
@@ -241,17 +266,71 @@ def main():
               f"{c.get('sonnet', 0):>7} {c.get('opus', 0):>5} "
               f"{c.get('(not passed)', 0):>5}")
 
+    # [6] OUTCOMES (0.2.0) — the three numbers that were unmeasurable in 0.1.x
+    print("\n[6] OUTCOMES (0.2.0)  ← fallback rate, verdicts, escalations")
+
+    # 6a. HARD fallback rate, straight from the 0.2.0 fields (no inference)
+    has_new = [r for r in rows if "fallback" in r and "is_named_tier" in r]
+    n = len(has_new)
+    if n:
+        fb = sum(1 for r in has_new if r.get("fallback") is True)
+        named = sum(1 for r in has_new if r.get("is_named_tier") is True)
+        other = n - fb - named
+        print(f"  fallback rate (hard, {n} 0.2.0 line(s)):")
+        print(f"    named tier (gearbox:*) : {named:>4}  {pct(named, n):>7}  "
+              f"{bar(named, n)}")
+        print(f"    proxy fallback         : {fb:>4}  {pct(fb, n):>7}  "
+              f"{bar(fb, n)}")
+        print(f"    neither                : {other:>4}  {pct(other, n):>7}  "
+              f"{bar(other, n)}")
+    else:
+        print("  fallback rate: no 0.2.0 lines yet — restart the session so the")
+        print("    updated PostToolUse hook loads, then run a delegation.")
+    old = total - n
+    if old:
+        inferred = sum(1 for r in rows if "fallback" not in r
+                       and role_of(r.get("subagent_type")) in
+                       ("explore (fallback)", "general-purpose"))
+        print(f"  ({old} pre-0.2.0 line(s) lack the field; ~{inferred} look like "
+              f"proxies by name — soft estimate, not counted above)")
+
+    # 6b. verifier verdicts
+    verdicts = Counter(r.get("verdict") for r in events
+                       if r.get("event") == "verdict")
+    vtot = sum(verdicts.values())
+    if vtot:
+        appr, rej = verdicts.get("approve", 0), verdicts.get("reject", 0)
+        print(f"  verifier verdicts: {vtot} total — "
+              f"approve {appr} ({pct(appr, vtot)}), reject {rej} ({pct(rej, vtot)})")
+    else:
+        print("  verifier verdicts: none logged (SubagentStop verdict capture "
+              "inactive on this version, or no verifier runs yet)")
+
+    # 6c. escalations
+    esc = [r for r in events if r.get("event") == "escalation"]
+    if esc:
+        trans = Counter(f"{r.get('from_tier', '?')}->{r.get('to_tier', '?')}"
+                        for r in esc)
+        detail = ", ".join(f"{k}:{v}" for k, v in trans.most_common())
+        print(f"  escalations: {len(esc)} ({detail})")
+    else:
+        print("  escalations: none logged (orchestrator records these manually; "
+              "see routing.md rule 3)")
+
     # self-check: independent recount must agree, or the report is not trustworthy
-    rc_total, rc_models = independent_recount(paths)
-    ok = (rc_total == total) and all(
-        rc_models.get(k, 0) == v for k, v in models.items())
+    rc_total, rc_models, rc_events = independent_recount(paths)
+    keys = set(models) | set(rc_models)
+    ok = (rc_total == total) and (rc_events == len(events)) and all(
+        rc_models.get(k, 0) == models.get(k, 0) for k in keys)
     print("\n[self-check] independent recount", end=" ")
     if ok:
-        print(f"OK — {rc_total} lines, model tallies match primary pass.")
+        print(f"OK — {rc_total} delegations + {rc_events} event(s); "
+              f"model tallies match primary pass.")
         return 0
     print("FAILED — primary vs recount disagree:")
-    print(f"  total: primary={total} recount={rc_total}")
-    for k in sorted(set(models) | set(rc_models)):
+    print(f"  delegations: primary={total} recount={rc_total}")
+    print(f"  events:      primary={len(events)} recount={rc_events}")
+    for k in sorted(keys):
         if models.get(k, 0) != rc_models.get(k, 0):
             print(f"  {k}: primary={models.get(k, 0)} recount={rc_models.get(k, 0)}")
     return 1

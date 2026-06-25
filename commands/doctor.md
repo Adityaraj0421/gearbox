@@ -194,6 +194,41 @@ Evaluate:
 
 ---
 
+## CHECK 9 — OUTCOME SCHEMA (0.2.0)
+
+Confirms the 0.2.0 outcome-logging hook is actually live by checking that the
+newest delegation line carries the new fields.
+
+```bash
+python3 -c "
+import json, pathlib
+p = pathlib.Path('.claude/gearbox-log.jsonl')
+if not p.exists():
+    print('NO_LOG'); raise SystemExit
+delegs = []
+for line in p.open():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        r = json.loads(line)
+    except Exception:
+        continue
+    if 'event' not in r:          # skip verdict/escalation event records
+        delegs.append(r)
+if not delegs:
+    print('NO_DELEGATIONS'); raise SystemExit
+last = delegs[-1]
+print('HAS_NEW' if ('fallback' in last and 'is_named_tier' in last) else 'OLD_SCHEMA')
+"
+```
+
+- `HAS_NEW` → **PASS**: "0.2.0 outcome logging active (fallback / is_named_tier present)"
+- `OLD_SCHEMA` → **WARN**: "newest delegation predates 0.2.0 — restart the session so the updated PostToolUse hook loads, then run one delegation"
+- `NO_LOG` or `NO_DELEGATIONS` → **WARN**: "no delegations logged yet — run one delegation, then re-check"
+
+---
+
 ## FINAL OUTPUT
 
 After completing all checks, print this table and nothing else before it:
@@ -212,6 +247,7 @@ Gearbox doctor report
  6  | Live dispatch+telemetry  | ...    | ...
  7  | Legacy install conflict  | ...    | ...
  8  | Version freshness        | ...    | ...
+ 9  | Outcome schema (0.2.0)   | ...    | ...
 ─────────────────────────────────────────────────────────────────────────
 ```
 
