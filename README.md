@@ -71,6 +71,17 @@ Something not working? Run `/gearbox:doctor` first — it checks the ten most co
 
 Each Task delegation appends one JSONL line to `.claude/gearbox-log.jsonl` in your project. Fields: `ts`, `session_id`, `subagent_type`, `model`, `prompt_head` (first 200 chars), `cwd`. The log stays in your project — it is not sent anywhere.
 
+## Measuring your routing
+
+`bench/analyze-log.py` aggregates your `gearbox-log.jsonl` files and reports the tier split (haiku/sonnet/opus), the agent distribution, verifier coverage, and date range — with an independent recount that asserts its own totals before printing.
+
+```bash
+python3 bench/analyze-log.py          # globs ~ for every .claude/gearbox-log.jsonl
+# or pass explicit paths:  python3 bench/analyze-log.py path/to/.claude/gearbox-log.jsonl
+```
+
+Note: the log currently captures routing **decisions** (which agent, which model) but not **outcomes** — there is no escalation, verifier-verdict, or fallback field yet, so the analyzer can show *how* work was routed but not whether each route was *right*. Capturing outcomes is the 0.2 work that turns this from a description into a measurement.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
