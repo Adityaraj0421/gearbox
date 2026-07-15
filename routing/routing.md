@@ -27,19 +27,21 @@ work to a cheap model twice.
    Never retry a third time at the same tier. Never skip from T0 to T2 unless
    the failure report shows a design problem.
 
-   **Log the escalation (0.2.0).** An escalation is a decision only you can
-   see — no hook can infer "this Task is an escalation of a previous one" — so
-   you must record it yourself. Immediately after deciding to escalate, append
-   one outcome record to the log with this Bash command (substitute the real
-   tiers and a short reason):
+   **Mark the escalation — REQUIRED, not optional (0.2.1).** No hook can *infer*
+   that a re-dispatch is an escalation, but one can *log* it if you tag it. So
+   whenever you escalate, the very first line of the new Task's prompt MUST be
+   the marker, with the real from/to tiers:
 
-   ```bash
-   python3 -c "import json,time,os; os.makedirs('.claude',exist_ok=True); open('.claude/gearbox-log.jsonl','a').write(json.dumps({'event':'escalation','from_tier':'T0','to_tier':'T1','reason':'<=6 words','ts':int(time.time())})+'\n')"
+   ```
+   [GEARBOX-ESCALATE from=T0 to=T1]
    ```
 
-   Limitation: this is instructed, not enforced — like the verifier BASELINE
-   snapshot, it depends on you remembering to run it. Escalations you do not
-   log stay invisible to bench/analyze-log.py.
+   The `log-escalation.py` PreToolUse hook detects that marker and writes the
+   `{"event":"escalation", ...}` record for you — you no longer hand-run a Bash
+   command. An escalation without the marker is a **routing-policy violation**:
+   it silently drops the one negative-reward signal 0.3.0's learned router needs.
+   `/gearbox:doctor` CHECK 10 fails loud when a log shows T1/T2 volume but zero
+   escalations, so skipped markers are caught, not lost.
 4. **Hard floors.** Anything touching auth, payments, migrations, concurrency,
    or secrets starts at T1 minimum. Production-breaking risk starts at T2.
 5. **Don't over-delegate.** Single-file questions you can answer from context,

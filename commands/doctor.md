@@ -125,10 +125,13 @@ p = pathlib.Path('.claude/gearbox-log.jsonl')
 if not p.exists():
     print('NO_LOG')
     exit()
-lines = [json.loads(l) for l in p if l.strip()]
+lines = [json.loads(l) for l in p.open() if l.strip()]
 print(len(lines))
-if lines:
-    last = lines[-1]
+# newest DELEGATION only; skip event records (no tool_name) so a trailing
+# verdict/escalation line cannot false-WARN
+delegs = [r for r in lines if 'event' not in r]
+if delegs:
+    last = delegs[-1]
     print('tool_name=' + repr(last.get('tool_name','')))
     print('subagent_type=' + repr(last.get('subagent_type','')))
     print('model=' + repr(last.get('model','')))
@@ -136,7 +139,7 @@ if lines:
 ```
 
 Evaluate:
-- AFTER_COUNT > BEFORE_COUNT, last entry has non-empty `tool_name`, `subagent_type` contains "scout", `model` is "haiku" → **PASS**
+- AFTER_COUNT > BEFORE_COUNT, newest delegation has non-empty `tool_name`, `subagent_type` contains "scout", `model` is "haiku" → **PASS**
 - AFTER_COUNT > BEFORE_COUNT but fields wrong → **WARN**: "dispatch worked but log fields unexpected — check hook schema against your Claude Code version"
 - AFTER_COUNT == BEFORE_COUNT (no new line) → **FAIL**: "PostToolUse hook not matching — check /plugin detail view for hook errors; if your Claude Code names the dispatch tool something other than Task or Agent, file an issue with this report"
 - Dispatch threw an error → **FAIL** quoting the error verbatim
@@ -229,6 +232,44 @@ print('HAS_NEW' if ('fallback' in last and 'is_named_tier' in last) else 'OLD_SC
 
 ---
 
+## CHECK 10 — ESCALATION LOGGING GAP (0.2.1)
+
+Escalation logging depends on the orchestrator tagging escalations with the
+`[GEARBOX-ESCALATE ...]` marker (routing.md rule 3). This check catches the case
+where real T1/T2 work is happening but nothing is being escalated — the "rule 3
+ignored" gap that left 0 escalation events across the entire 0.2.0 window.
+
+```bash
+python3 -c "
+import json, pathlib
+p = pathlib.Path('.claude/gearbox-log.jsonl')
+if not p.exists():
+    print('NO_LOG'); raise SystemExit
+t1t2 = esc = 0
+for line in p.open():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        r = json.loads(line)
+    except Exception:
+        continue
+    if r.get('event') == 'escalation':
+        esc += 1
+    elif 'event' not in r and (r.get('model') or '') in ('sonnet', 'opus'):
+        t1t2 += 1
+print(f'T1T2={t1t2} ESC={esc}')
+"
+```
+
+Evaluate:
+- `NO_LOG` → **PASS** (nothing to check yet)
+- `T1T2` < 10 → **PASS** (too little T1/T2 volume to expect an escalation)
+- `T1T2` >= 10 and `ESC` == 0 → **WARN**: "T1/T2 work is happening but zero escalations logged — the orchestrator is likely skipping the `[GEARBOX-ESCALATE ...]` marker (routing.md rule 3); escalation reward signal is being lost"
+- `T1T2` >= 10 and `ESC` > 0 → **PASS**
+
+---
+
 ## FINAL OUTPUT
 
 After completing all checks, print this table and nothing else before it:
@@ -248,6 +289,7 @@ Gearbox doctor report
  7  | Legacy install conflict  | ...    | ...
  8  | Version freshness        | ...    | ...
  9  | Outcome schema (0.2.0)   | ...    | ...
+ 10 | Escalation logging gap   | ...    | ...
 ─────────────────────────────────────────────────────────────────────────
 ```
 

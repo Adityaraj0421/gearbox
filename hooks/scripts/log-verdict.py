@@ -71,6 +71,49 @@ def _last_assistant_text(transcript_path: str) -> str:
     return last
 
 
+def _correlate_delegation(cwd: str, session_id: str):
+    """Attach the verdict to the delegation it most likely judged.
+
+    SubagentStop's payload identifies the *verifier* that just finished, not the
+    T1/T2 delegation it was checking — there is no hard link. So this is a
+    HEURISTIC, labelled as such in the record via join_method: pick the
+    most-recent delegation in the same session that (a) ran on a T1/T2 model,
+    (b) is not itself a verifier, and (c) has not already been claimed by an
+    earlier verdict. Returns (delegation_id | None, join_method).
+    """
+    log_path = Path(cwd or ".") / ".claude" / "gearbox-log.jsonl"
+    if not log_path.exists():
+        return None, "unmatched"
+    claimed, candidates = set(), []
+    try:
+        for line in log_path.open(encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if r.get("event") == "verdict":
+                if r.get("delegation_id"):
+                    claimed.add(r["delegation_id"])
+                continue
+            if r.get("event"):                       # e.g. escalation records
+                continue
+            if r.get("session_id") != session_id:
+                continue
+            did = r.get("delegation_id")
+            if (did and (r.get("model") or "") in ("sonnet", "opus")
+                    and "verifier" not in (r.get("subagent_type") or "").lower()):
+                candidates.append(did)               # append order = chronological
+    except OSError:
+        return None, "unmatched"
+    for did in reversed(candidates):                 # most-recent unclaimed wins
+        if did not in claimed:
+            return did, "heuristic:last_unverified_t1t2_same_session"
+    return None, "unmatched"
+
+
 def _verdict_from(text: str):
     """Return 'approve' / 'reject' / None. Earliest marker wins if both appear."""
     if not text:
@@ -109,11 +152,15 @@ def main() -> None:
     if verdict is None:
         return  # verifier finished but no parseable verdict; don't pollute log
 
+    session_id = event.get("session_id", "")
+    delegation_id, join_method = _correlate_delegation(event.get("cwd"), session_id)
     record = {
         "event": "verdict",
         "verdict": verdict,
+        "delegation_id": delegation_id,   # None when unmatched — never a hard join
+        "join_method": join_method,
         "ts": int(time.time()),
-        "session_id": event.get("session_id", ""),
+        "session_id": session_id,
     }
     log_path = Path(event.get("cwd") or ".") / ".claude" / "gearbox-log.jsonl"
     try:

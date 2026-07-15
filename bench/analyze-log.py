@@ -36,13 +36,13 @@ Usage:
 """
 import sys
 import json
-import glob
 import os
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 KNOWN_FIELDS = {"ts", "session_id", "tool_name", "subagent_type", "model",
-                "prompt_head", "cwd", "is_named_tier", "fallback"}
+                "prompt_head", "cwd", "is_named_tier", "fallback",
+                "delegation_id", "cost", "cost_source"}
 # Fields that would carry an escalation/outcome signal if Gearbox logged one.
 SIGNAL_FIELDS = {"escalation", "escalated", "verdict", "outcome", "result",
                  "fallback", "tier", "from_tier", "to_tier", "verify",
@@ -75,12 +75,44 @@ def role_of(subagent_type):
     return base or "(empty)"
 
 
+# Directory names never worth descending into when auto-discovering logs: no
+# real project keeps its .claude log inside these, and Library in particular is
+# where the mirror problem lives.
+_PRUNE_DIRS = {"Library", "node_modules", ".git", "cache", ".Trash"}
+
+
 def resolve_paths(args):
-    """Explicit paths win; otherwise glob ~ for logs, excluding cache dirs."""
+    """Explicit paths win; otherwise discover logs under ~.
+
+    Two filters keep auto-discovery honest. (1) De-duplicate by realpath: macOS
+    symlinks ~/Downloads into every app sandbox under ~/Library/Containers, so a
+    naive ~/** glob ingests hundreds of mirror copies of the same file and
+    inflates every total. (2) Exclude Library/Containers and Library/Group
+    Containers outright — nothing under them is a real project.
+
+    Discovery walks the tree with followlinks=False and prunes _PRUNE_DIRS
+    rather than globbing ~/**: the glob follows the sandbox symlinks (both the
+    count explosion and a multi-minute traversal), whereas an unfollowed,
+    pruned walk finds the same real logs in a fraction of a second.
+    """
     if args:
         return args
-    pattern = os.path.expanduser("~/**/.claude/gearbox-log.jsonl")
-    return [p for p in glob.glob(pattern, recursive=True) if "/cache/" not in p]
+    home = os.path.expanduser("~")
+    seen, out = set(), []
+    for root, dirs, files in os.walk(home):          # followlinks=False (default)
+        dirs[:] = [d for d in dirs if d not in _PRUNE_DIRS]
+        if "gearbox-log.jsonl" not in files or os.path.basename(root) != ".claude":
+            continue
+        p = os.path.join(root, "gearbox-log.jsonl")
+        if ("/cache/" in p or "Library/Containers" in p
+                or "Library/Group Containers" in p):
+            continue
+        rp = os.path.realpath(p)
+        if rp in seen:
+            continue
+        seen.add(rp)
+        out.append(p)
+    return out
 
 
 def load(paths):
@@ -295,13 +327,23 @@ def main():
               f"proxies by name — soft estimate, not counted above)")
 
     # 6b. verifier verdicts
-    verdicts = Counter(r.get("verdict") for r in events
-                       if r.get("event") == "verdict")
+    verdict_rows = [r for r in events if r.get("event") == "verdict"]
+    verdicts = Counter(r.get("verdict") for r in verdict_rows)
     vtot = sum(verdicts.values())
     if vtot:
         appr, rej = verdicts.get("approve", 0), verdicts.get("reject", 0)
         print(f"  verifier verdicts: {vtot} total — "
               f"approve {appr} ({pct(appr, vtot)}), reject {rej} ({pct(rej, vtot)})")
+        # join coverage (0.2.1): what fraction of verdicts attach to a
+        # delegation. A verdict with a non-null delegation_id was correlated
+        # (heuristically — see log-verdict.py join_method); reward can only be
+        # trained on the joined slice.
+        joined = sum(1 for r in verdict_rows if r.get("delegation_id"))
+        methods = Counter(r.get("join_method", "(pre-0.2.1)") for r in verdict_rows)
+        print(f"  join coverage: {joined}/{vtot} = {pct(joined, vtot)} of "
+              f"verdicts attach to a delegation")
+        print(f"    by method: "
+              f"{', '.join(f'{k}:{v}' for k, v in methods.most_common())}")
     else:
         print("  verifier verdicts: none logged (SubagentStop verdict capture "
               "inactive on this version, or no verifier runs yet)")

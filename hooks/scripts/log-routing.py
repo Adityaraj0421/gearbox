@@ -21,11 +21,34 @@ schema dependency, so they are always present going forward):
 import json
 import sys
 import time
+import uuid
 from pathlib import Path
 
 # Generic proxy agents the routing policy falls back to when a named gearbox:
 # agent is unavailable (routing.md rule 8: scout->Explore, others->general-purpose).
 PROXY_AGENTS = {"general-purpose", "explore"}
+
+
+def extract_cost(event):
+    """Best-effort cost signal from the PostToolUse payload.
+
+    The Task/Agent tool_response shape varies across Claude Code versions, so
+    probe the common carriers rather than assume one. Returns (cost, source);
+    source is "unavailable" when nothing cost-like is present, so the gap is
+    visible in the data instead of being silently omitted (0.3.0 reward = /cost).
+    """
+    resp = event.get("tool_response")
+    if isinstance(resp, dict):
+        usage = resp.get("usage")
+        if isinstance(usage, dict) and usage:
+            return usage, "tool_response.usage"
+        picked = {k: resp[k] for k in
+                  ("total_tokens", "totalTokens", "total_duration_ms",
+                   "duration_ms", "num_turns", "totalToolUseCount")
+                  if k in resp}
+        if picked:
+            return picked, "tool_response"
+    return None, "unavailable"
 
 
 def main() -> None:
@@ -36,8 +59,12 @@ def main() -> None:
 
     tool_input = event.get("tool_input", {}) or {}
     subagent_type = tool_input.get("subagent_type", "") or ""
+    cost, cost_source = extract_cost(event)
     record = {
         "ts": int(time.time()),
+        # Join key for reward attribution: the verdict logger echoes this back so
+        # a {"event":"verdict"} record can point at the delegation it judged.
+        "delegation_id": uuid.uuid4().hex[:12],
         "session_id": event.get("session_id", ""),
         "tool_name": event.get("tool_name", ""),
         "subagent_type": subagent_type,
@@ -46,7 +73,10 @@ def main() -> None:
         "model": tool_input.get("model", "(not passed)"),
         "prompt_head": (tool_input.get("prompt", "") or "")[:200],
         "cwd": event.get("cwd", ""),
+        "cost_source": cost_source,
     }
+    if cost is not None:
+        record["cost"] = cost
 
     log_path = Path(event.get("cwd") or ".") / ".claude" / "gearbox-log.jsonl"
     try:
