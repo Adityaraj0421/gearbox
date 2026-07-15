@@ -1,5 +1,10 @@
 # Gearbox
 
+[![Latest release](https://img.shields.io/github/v/release/Adityaraj0421/gearbox?sort=semver&color=8A63D2)](https://github.com/Adityaraj0421/gearbox/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/Adityaraj0421/gearbox?color=blue)](LICENSE)
+[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A63D2)](#install)
+[![Routing telemetry](https://img.shields.io/badge/routing-JSONL%20telemetry-2ea44f)](#measuring-your-routing)
+
 Gearbox is a Claude Code plugin that automatically routes subagent delegations to the cheapest model tier that can handle the work — haiku for search and mechanical edits, sonnet for standard implementation, opus for hard architectural problems. It adds an escalation ladder so a cheap agent that gets stuck hands off to a more expensive one, and a verifier gate that catches gaming patterns (like reward-hacking an impossible test) before bad results are accepted. JSONL telemetry logs every delegation and its outcomes — which tier ran it, whether a named agent or a generic proxy handled it, verifier verdicts, and escalations — so you can measure how your routing actually behaves.
 
 ## Install
