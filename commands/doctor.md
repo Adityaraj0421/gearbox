@@ -262,11 +262,17 @@ print(f'T1T2={t1t2} ESC={esc}')
 "
 ```
 
-Evaluate:
-- `NO_LOG` → **PASS** (nothing to check yet)
-- `T1T2` < 10 → **PASS** (too little T1/T2 volume to expect an escalation)
+Evaluate. Below the threshold this check has not been *exercised*, so it reports
+what it is — ignorant, not healthy. A vacuous PASS reads as "escalation logging
+works", which is the one conclusion the data cannot support:
+
+- `NO_LOG` → **INSUFFICIENT_DATA**: "no log in this project yet — nothing to check"
+- `T1T2` < 10 → **INSUFFICIENT_DATA** with the count: "only N T1/T2 delegation(s) — too little volume to expect an escalation, so this check cannot tell 'no escalations happened' from 'the marker is being dropped'. Not a pass."
 - `T1T2` >= 10 and `ESC` == 0 → **WARN**: "T1/T2 work is happening but zero escalations logged — the orchestrator is likely skipping the `[GEARBOX-ESCALATE ...]` marker (routing.md rule 3); escalation reward signal is being lost"
 - `T1T2` >= 10 and `ESC` > 0 → **PASS**
+
+`INSUFFICIENT_DATA` is not a FAIL and does not count toward the final issue
+tally, but it must never be rendered as `PASS` in the report table.
 
 ---
 
@@ -293,6 +299,9 @@ Gearbox doctor report
 ─────────────────────────────────────────────────────────────────────────
 ```
 
+Render each check's own result verbatim — `PASS`, `WARN`, `FAIL`, `SKIP`, or
+`INSUFFICIENT_DATA`. Never collapse `INSUFFICIENT_DATA` into `PASS`.
+
 Then on the next line, print exactly one of:
-- `Gearbox healthy` — if there are zero FAILs
+- `Gearbox healthy — N check(s) not yet exercised` — if there are zero FAILs and N INSUFFICIENT_DATA rows (omit the suffix when N is 0)
 - `N issue(s) found — fixes above. If filing a GitHub issue, paste this entire table.` — where N is the count of FAILs

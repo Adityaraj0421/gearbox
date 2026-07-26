@@ -33,6 +33,7 @@ worse than none, so the analyzer proves its own arithmetic before you quote it.
 Usage:
     python3 bench/analyze-log.py                  # glob ~ for every log
     python3 bench/analyze-log.py path/to/log.jsonl [more.jsonl ...]
+    python3 bench/analyze-log.py --selftest       # assert the join-coverage math
 """
 import sys
 import json
@@ -178,6 +179,34 @@ def pct(n, d):
     return f"{(100 * n / d):.1f}%" if d else "n/a"
 
 
+def join_coverage(verdict_rows):
+    """(joined, joinable) over 0.2.1-schema verdicts only.
+
+    Only the 0.2.1 verdict logger writes a `delegation_id` key at all (null when
+    the heuristic found no match). Verdicts predating it have no key and are
+    structurally unjoinable, so counting them in the denominator invents a
+    failure rate for a feature that never ran on them. Presence of the KEY, not
+    its truthiness, is what makes a verdict eligible.
+    """
+    joinable = [r for r in verdict_rows if "delegation_id" in r]
+    return sum(1 for r in joinable if r.get("delegation_id")), len(joinable)
+
+
+def _selftest():
+    """Guard the join-coverage denominator. A silently-wrong instrument is the
+    exact failure this function exists to prevent, so it gets the one check."""
+    pre = [{"event": "verdict", "verdict": "approve"}]                    # no key
+    null = [{"event": "verdict", "delegation_id": None}]                  # unmatched
+    hit = [{"event": "verdict", "delegation_id": "abc"}]                  # joined
+    assert join_coverage([]) == (0, 0)
+    assert join_coverage(pre * 15) == (0, 0), "pre-0.2.1 must not be a denominator"
+    assert join_coverage(pre * 15 + null) == (0, 1)
+    assert join_coverage(pre * 15 + null + hit) == (1, 2)
+    assert join_coverage(hit * 3) == (3, 3)
+    print("selftest OK")
+    return 0
+
+
 def bar(n, d, width=24):
     filled = round(width * n / d) if d else 0
     return "█" * filled + "·" * (width - filled)
@@ -193,6 +222,8 @@ def table(title, counter, total, key_label):
 
 
 def main():
+    if sys.argv[1:2] == ["--selftest"]:
+        return _selftest()
     paths = resolve_paths(sys.argv[1:])
     if not paths:
         print("No gearbox-log.jsonl files found "
@@ -334,16 +365,27 @@ def main():
         appr, rej = verdicts.get("approve", 0), verdicts.get("reject", 0)
         print(f"  verifier verdicts: {vtot} total — "
               f"approve {appr} ({pct(appr, vtot)}), reject {rej} ({pct(rej, vtot)})")
-        # join coverage (0.2.1): what fraction of verdicts attach to a
-        # delegation. A verdict with a non-null delegation_id was correlated
+        # join coverage (0.2.1): what fraction of *joinable* verdicts attach to
+        # a delegation. A verdict with a non-null delegation_id was correlated
         # (heuristically — see log-verdict.py join_method); reward can only be
-        # trained on the joined slice.
-        joined = sum(1 for r in verdict_rows if r.get("delegation_id"))
-        methods = Counter(r.get("join_method", "(pre-0.2.1)") for r in verdict_rows)
-        print(f"  join coverage: {joined}/{vtot} = {pct(joined, vtot)} of "
-              f"verdicts attach to a delegation")
-        print(f"    by method: "
-              f"{', '.join(f'{k}:{v}' for k, v in methods.most_common())}")
+        # trained on the joined slice. Pre-0.2.1 verdicts are excluded from the
+        # denominator, not scored as misses — see join_coverage().
+        joined, joinable = join_coverage(verdict_rows)
+        if joinable:
+            print(f"  join coverage: {joined}/{joinable} = {pct(joined, joinable)} "
+                  f"of post-0.2.1 verdicts attach to a delegation")
+            methods = Counter(r.get("join_method") or "(unlabelled)"
+                              for r in verdict_rows if "delegation_id" in r)
+            print(f"    by method: "
+                  f"{', '.join(f'{k}:{v}' for k, v in methods.most_common())}")
+            if vtot > joinable:
+                print(f"    ({vtot - joinable} pre-0.2.1 verdict(s) excluded — "
+                      f"no delegation_id key, structurally unjoinable)")
+        else:
+            print("  join coverage: n/a (0 post-0.2.1 verdicts)")
+            if vtot:
+                print(f"    all {vtot} verdict(s) predate 0.2.1 — the join has "
+                      f"not been exercised yet, which is not the same as 0%")
     else:
         print("  verifier verdicts: none logged (SubagentStop verdict capture "
               "inactive on this version, or no verifier runs yet)")
