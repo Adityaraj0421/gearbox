@@ -276,6 +276,53 @@ tally, but it must never be rendered as `PASS` in the report table.
 
 ---
 
+## CHECK 11 — PROXY ROUTING / DEGRADED TELEMETRY (0.2.3)
+
+Catches the failure that produced 28 consecutive real delegations with zero
+verdicts: the orchestrator followed the tier *shape* but dispatched
+`general-purpose` instead of the named `gearbox:` agents. Nothing errors, the
+work gets done, and the outcome telemetry is silently empty — `is_named_tier`
+goes false, no verdict record is written, and nothing can be joined to a reward.
+Only meaningful alongside CHECK 3: if the agents are NOT installed, proxy use is
+correct rule-8 fallback, not a defect.
+
+```bash
+python3 -c "
+import json, pathlib
+p = pathlib.Path('.claude/gearbox-log.jsonl')
+if not p.exists():
+    print('NO_LOG'); raise SystemExit
+delegs = []
+for line in p.open():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        r = json.loads(line)
+    except Exception:
+        continue
+    if 'event' not in r and 'is_named_tier' in r:
+        delegs.append(r)
+if not delegs:
+    print('NO_SCHEMA'); raise SystemExit
+recent = delegs[-20:]
+proxy = sum(1 for r in recent if not r.get('is_named_tier'))
+named = len(recent) - proxy
+vfy = sum(1 for r in recent if 'verifier' in (r.get('subagent_type') or '').lower())
+print(f'RECENT={len(recent)} NAMED={named} PROXY={proxy} VERIFIER={vfy}')
+"
+```
+
+Evaluate over the last 20 outcome-schema delegations:
+
+- `NO_LOG` or `NO_SCHEMA` → **INSUFFICIENT_DATA**: "no 0.2.0+ delegations in this project yet"
+- `PROXY` == 0 → **PASS**: "all recent delegations used named `gearbox:` agents"
+- `PROXY` > 0 and CHECK 3 reported fewer than 5/5 agents → **WARN**: "proxy fallback is expected — N of 5 agents missing; restart the session so agents load (routing.md rule 8)"
+- `PROXY` > 0 and CHECK 3 reported 5/5 → **WARN**, and this is the loud one: "PROXY ROUTING WITH AGENTS AVAILABLE — N/20 recent delegations ran as `general-purpose`/`Explore` while all 5 named agents were installed. This is a routing.md rule-1 violation, not a fallback. Outcome telemetry is degraded to nothing: `is_named_tier=false`, no verdict records, no reward attribution. Dispatch `gearbox:builder` / `gearbox:verifier` etc. by name with explicit `model:`."
+- `PROXY` == 0 but `VERIFIER` == 0 across 20 delegations that include T1/T2 work → append to the evidence: "named agents in use but no verifier runs — rule 9 is being skipped, so verdicts are still not being produced"
+
+---
+
 ## FINAL OUTPUT
 
 After completing all checks, print this table and nothing else before it:
@@ -296,6 +343,7 @@ Gearbox doctor report
  8  | Version freshness        | ...    | ...
  9  | Outcome schema (0.2.0)   | ...    | ...
  10 | Escalation logging gap   | ...    | ...
+ 11 | Proxy routing            | ...    | ...
 ─────────────────────────────────────────────────────────────────────────
 ```
 

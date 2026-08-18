@@ -33,7 +33,7 @@ worse than none, so the analyzer proves its own arithmetic before you quote it.
 Usage:
     python3 bench/analyze-log.py                  # glob ~ for every log
     python3 bench/analyze-log.py path/to/log.jsonl [more.jsonl ...]
-    python3 bench/analyze-log.py --selftest       # assert the join-coverage math
+    python3 bench/analyze-log.py --selftest       # assert join-coverage + token math
 """
 import sys
 import json
@@ -179,6 +179,35 @@ def pct(n, d):
     return f"{(100 * n / d):.1f}%" if d else "n/a"
 
 
+def total_tokens(cost):
+    """Total tokens for one delegation's `cost` payload.
+
+    THERE IS NO `total_tokens` KEY in Claude Code's `tool_response.usage`. A
+    direct `cost["total_tokens"]` lookup returns nothing and silently reads as
+    zero, which is how a log full of real token data can report a cost of 0.
+    The total is the sum of four separate counters:
+
+        input_tokens + output_tokens
+        + cache_creation_input_tokens + cache_read_input_tokens
+
+    Cache reads are counted: they are cheaper per token, not free, and omitting
+    them understates a cached delegation by an order of magnitude (a real
+    sample: 2 input + 1517 output vs 96964 cache_read). Any subkey may be
+    absent on a different Claude Code version, so each is defaulted to 0 and
+    non-numeric values are skipped rather than raising.
+    """
+    if not isinstance(cost, dict):
+        return 0
+    out = 0
+    for k in ("input_tokens", "output_tokens",
+              "cache_creation_input_tokens", "cache_read_input_tokens"):
+        v = cost.get(k, 0)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue
+        out += v
+    return int(out)
+
+
 def join_coverage(verdict_rows):
     """(joined, joinable) over 0.2.1-schema verdicts only.
 
@@ -203,6 +232,15 @@ def _selftest():
     assert join_coverage(pre * 15 + null) == (0, 1)
     assert join_coverage(pre * 15 + null + hit) == (1, 2)
     assert join_coverage(hit * 3) == (3, 3)
+    # total_tokens: no total_tokens key exists, so a real payload must sum to
+    # the four counters, and junk/missing subkeys must degrade to 0 not raise.
+    real = {"input_tokens": 2, "output_tokens": 1517,
+            "cache_creation_input_tokens": 609, "cache_read_input_tokens": 96964}
+    assert total_tokens(real) == 99092
+    assert total_tokens({"total_tokens": 5000}) == 0, "no such key — must not be trusted"
+    assert total_tokens({"input_tokens": 5}) == 5
+    assert total_tokens({"input_tokens": "x", "output_tokens": 3}) == 3
+    assert total_tokens(None) == 0 and total_tokens("nope") == 0
     print("selftest OK")
     return 0
 
@@ -400,6 +438,33 @@ def main():
     else:
         print("  escalations: none logged (orchestrator records these manually; "
               "see routing.md rule 3)")
+
+    # 7. cost signal — reward-per-cost is the 0.3.0 objective, so report both
+    # whether cost is being captured at all and what it sums to.
+    print("\n[7] COST SIGNAL  ← reward-per-cost input for 0.3.0")
+    priced = [r for r in rows if isinstance(r.get("cost"), dict)]
+    sources = Counter(r.get("cost_source") for r in rows
+                      if "cost_source" in r)
+    if not sources:
+        print("  no delegation carries cost_source — pre-0.2.1 data only")
+    else:
+        have = sum(1 for r in rows
+                   if r.get("cost_source") not in (None, "unavailable"))
+        n = sum(sources.values())
+        print(f"  cost captured: {have}/{n} = {pct(have, n)} of 0.2.1 delegations")
+        print(f"  by source    : "
+              f"{', '.join(f'{k}:{v}' for k, v in sources.most_common())}")
+    if priced:
+        by_tier = defaultdict(int)
+        for r in priced:
+            by_tier[MODEL_TIER.get(norm(r.get("model")), "(unknown)")] += \
+                total_tokens(r["cost"])
+        grand = sum(by_tier.values())
+        print(f"  total tokens : {grand:,} across {len(priced)} priced delegation(s)")
+        for tier, tok in sorted(by_tier.items(), key=lambda kv: -kv[1]):
+            print(f"    {tier:18s} {tok:>12,}  {pct(tok, grand)}")
+        print("  NOTE: summed from input+output+cache_creation+cache_read — "
+              "tool_response.usage has NO total_tokens key.")
 
     # self-check: independent recount must agree, or the report is not trustworthy
     rc_total, rc_models, rc_events = independent_recount(paths)
