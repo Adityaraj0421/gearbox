@@ -24,6 +24,12 @@ import time
 import uuid
 from pathlib import Path
 
+try:
+    from gearbox_probe import probe
+except Exception:  # probe is optional; never let it break a hook
+    def probe(event, cwd=None):
+        pass
+
 # Generic proxy agents the routing policy falls back to when a named gearbox:
 # agent is unavailable (routing.md rule 8: scout->Explore, others->general-purpose).
 PROXY_AGENTS = {"general-purpose", "explore"}
@@ -56,6 +62,7 @@ def main() -> None:
         event = json.load(sys.stdin)
     except Exception:
         return  # never block the session on logger failure
+    probe(event)
 
     tool_input = event.get("tool_input", {}) or {}
     subagent_type = tool_input.get("subagent_type", "") or ""

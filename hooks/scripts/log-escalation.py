@@ -19,6 +19,12 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    from gearbox_probe import probe
+except Exception:  # probe is optional; never let it break a hook
+    def probe(event, cwd=None):
+        pass
+
 # e.g. [GEARBOX-ESCALATE from=T0 to=T1]  (tiers T0..T2, case-insensitive)
 MARKER = re.compile(r"\[GEARBOX-ESCALATE\s+from=(T[0-2])\s+to=(T[0-2])\]", re.I)
 
@@ -28,6 +34,7 @@ def main() -> None:
         event = json.load(sys.stdin)
     except Exception:
         return  # never block the session on logger failure
+    probe(event)
 
     prompt = ((event.get("tool_input") or {}).get("prompt") or "")
     m = MARKER.search(prompt)
