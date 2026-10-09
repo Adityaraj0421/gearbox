@@ -79,7 +79,7 @@ Something not working? Run `/gearbox:doctor` first — it checks the eleven most
 
 ## Telemetry
 
-Each Task delegation appends one JSONL line to `.claude/gearbox-log.jsonl` in your project. Delegation fields: `ts`, `session_id`, `tool_name`, `subagent_type`, `is_named_tier`, `fallback`, `model`, `prompt_head` (first 200 chars), `cwd`.
+Each Task delegation appends one JSONL line to `.claude/gearbox-log.jsonl` in your project. Delegation fields: `ts`, `delegation_id`, `session_id`, `tool_name`, `subagent_type`, `is_named_tier`, `fallback`, `model`, `prompt_head` (first 200 chars), `cwd`, `cost_source`, and `cost` (the subagent's token usage, when the hook payload carries it).
 
 As of 0.2.0 the log also records **outcome events** on their own lines:
 - `{"event":"verdict","verdict":"approve"|"reject", ...}` — written by a `SubagentStop` hook when `gearbox:verifier` finishes.
@@ -101,14 +101,14 @@ No restart is needed. Run a few delegations, including at least one background a
 
 ## Measuring your routing
 
-`bench/analyze-log.py` aggregates your `gearbox-log.jsonl` files and reports the tier split (haiku/sonnet/opus), the agent distribution, verifier coverage, the date range, and — as of 0.2.0 — an **outcomes** section: a hard fallback rate (named `gearbox:` tier vs generic proxy, counted from the `fallback`/`is_named_tier` fields rather than guessed), the verifier approve/reject ratio, and escalation frequency. An independent recount asserts its own totals before printing.
+`bench/analyze-log.py` aggregates your `gearbox-log.jsonl` files and reports the tier split (haiku/sonnet/opus), the agent distribution, verifier coverage, the date range, and — as of 0.2.0 — an **outcomes** section: a hard fallback rate (named `gearbox:` tier vs generic proxy, counted from the `fallback`/`is_named_tier` fields rather than guessed), the verifier approve/reject ratio, and escalation frequency. It also reports verdict→delegation join coverage and token cost per tier (0.2.1+), and, from 0.2.4, the model the verifier ran on, "escalations" that went down a tier, and sessions that started with routing active but never delegated. Records copied across files — a worktree keeps its own copy of the project log — are counted once, and the header says how many were dropped. An independent recount asserts its own totals before printing; `--selftest` checks the analyzer's own arithmetic.
 
 ```bash
-python3 bench/analyze-log.py          # globs ~ for every .claude/gearbox-log.jsonl
+python3 bench/analyze-log.py          # walks ~ for every .claude/gearbox-log.jsonl
 # or pass explicit paths:  python3 bench/analyze-log.py path/to/.claude/gearbox-log.jsonl
 ```
 
-Two caveats, both honest gaps: verdict capture depends on your Claude Code version surfacing the verifier's output to `SubagentStop` (if no `{"event":"verdict"}` lines ever appear, it is inactive on your version, and the verdict stays a manual field); escalation logging is instructed in the routing policy, not enforced, so escalation counts are a floor. The new fields only appear after you restart the session so the updated hook loads — confirm with `/gearbox:doctor` (CHECK 9).
+Two caveats, both honest gaps: verdict capture depends on your Claude Code version surfacing the verifier's output to `SubagentStop` (if no `{"event":"verdict"}` lines ever appear, it is inactive on your version, and the verdict stays a manual field); escalation logging depends on the orchestrator adding the `[GEARBOX-ESCALATE]` marker (routing.md rule 3), so escalation counts are a floor; and token cost is only captured when the `PostToolUse` payload carries usage, which appears not to happen for background agents (0.2.5 targets this — see the payload probe above). The new fields only appear after you restart the session so the updated hook loads — confirm with `/gearbox:doctor` (CHECK 9).
 
 ## License
 
