@@ -27,6 +27,12 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    from gearbox_probe import probe
+except Exception:  # probe is optional; never let it break a hook
+    def probe(event, cwd=None):
+        pass
+
 
 def _last_assistant_text(transcript_path: str) -> str:
     """Best-effort: pull the last assistant text message from a JSONL transcript.
@@ -134,6 +140,7 @@ def main() -> None:
         event = json.load(sys.stdin)
     except Exception:
         return  # never break the session
+    probe(event)
 
     # Identify the finishing subagent. Bail silently if we cannot tell it was
     # the verifier — never attribute a verdict to the wrong agent.

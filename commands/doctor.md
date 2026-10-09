@@ -164,22 +164,24 @@ grep -l "@.claude/routing.md" CLAUDE.md 2>/dev/null && echo "CLAUDE_MD_FOUND" ||
 
 ## CHECK 8 — VERSION FRESHNESS
 
-**Step A** — read installed version:
+**Step A** — read installed version. The plugin root is passed as an
+argument, not read from the environment: `${CLAUDE_PLUGIN_ROOT}` is expanded in
+this command's text, but it is usually NOT exported to the Bash shell, so
+`os.environ` inside Python sees nothing (that made this check answer
+`NO_PLUGIN_ROOT` on healthy 0.2.3 installs). If the argument still comes out
+empty, re-run with the path CHECK 0 recorded.
 
 ```bash
-python3 -c "
-import json, os, pathlib
-root = os.environ.get('CLAUDE_PLUGIN_ROOT','')
+python3 - "${CLAUDE_PLUGIN_ROOT}" <<'PY'
+import json, sys, pathlib
+root = sys.argv[1] if len(sys.argv) > 1 else ''
 if not root:
-    print('NO_PLUGIN_ROOT')
-    exit()
+    print('NO_PLUGIN_ROOT'); raise SystemExit
 p = pathlib.Path(root) / '.claude-plugin' / 'plugin.json'
 if not p.exists():
-    print('NO_PLUGIN_JSON')
-    exit()
-d = json.loads(p.read_text())
-print(d.get('version','unknown'))
-"
+    print('NO_PLUGIN_JSON'); raise SystemExit
+print(json.loads(p.read_text()).get('version', 'unknown'))
+PY
 ```
 
 **Step B** — fetch latest from GitHub (5-second timeout; skip on failure):

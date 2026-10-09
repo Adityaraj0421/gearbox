@@ -15,6 +15,13 @@ aggregates one or more of those logs and reports how work was routed:
      proxy, from the fallback/is_named_tier fields), the verifier approve/reject
      ratio, and escalation frequency, read from {"event":"verdict"} and
      {"event":"escalation"} records
+  7. cost signal (tokens per tier) and, from 0.2.4 {"event":"session_start"}
+     records, sessions that started with routing active but never delegated
+
+Worktrees carry their own copy of a project's .claude/ directory, so the same
+records can appear in several files. Records that are byte-for-byte identical
+(after key sorting) across DIFFERENT files are counted once; the number dropped
+is printed in the header. Identical records inside one file are kept.
 
 Two record shapes coexist in a log: delegation records (one per Task/Agent
 call) and outcome-event records ({"event": "verdict"|"escalation"}). Delegation
@@ -31,7 +38,7 @@ primary pass. That self-check is intentional: telemetry you cannot trust is
 worse than none, so the analyzer proves its own arithmetic before you quote it.
 
 Usage:
-    python3 bench/analyze-log.py                  # glob ~ for every log
+    python3 bench/analyze-log.py                  # walk ~ for every log
     python3 bench/analyze-log.py path/to/log.jsonl [more.jsonl ...]
     python3 bench/analyze-log.py --selftest       # assert join-coverage + token math
 """
@@ -137,11 +144,41 @@ def load(paths):
     return rows, bad
 
 
-EVENT_KINDS = ("verdict", "escalation")
+def _canon(r):
+    """Canonical form of a record for duplicate detection (ignores _file)."""
+    return json.dumps({k: v for k, v in r.items() if not k.startswith("_")},
+                      sort_keys=True, ensure_ascii=False)
+
+
+def dedupe_across_files(rows):
+    """Drop records already seen, identically, in a DIFFERENT file.
+
+    A worktree under .claude/worktrees/ keeps its own copy of the project log,
+    so one delegation can be logged two or three times. Realpath de-duplication
+    cannot catch this because the copies are separate files. Exact duplicates
+    inside a single file are kept: those are not copies, and the hooks never
+    write one record twice. Returns (kept_rows, n_dropped).
+    """
+    first_file, kept, dropped = {}, [], 0
+    for r in rows:
+        key = _canon(r)
+        owner = first_file.setdefault(key, r.get("_file"))
+        if owner != r.get("_file"):
+            dropped += 1
+            continue
+        kept.append(r)
+    return kept, dropped
+
+
+# verdict / escalation (0.2.0+), session_start (0.2.4). Any record carrying an
+# "event" key is an event, so a future kind can never be miscounted as a
+# delegation.
+EVENT_KINDS = ("verdict", "escalation", "session_start")
+TIER_RANK = {"T0": 0, "T1": 1, "T2": 2}
 
 
 def is_event(r):
-    return r.get("event") in EVENT_KINDS
+    return bool(r.get("event"))
 
 
 def independent_recount(paths):
@@ -155,6 +192,7 @@ def independent_recount(paths):
     delegs = 0
     events = 0
     models = Counter()
+    owner = {}                       # canonical record -> first file it came from
     for p in paths:
         try:
             with open(p, encoding="utf-8") as f:
@@ -165,7 +203,12 @@ def independent_recount(paths):
                         r = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if r.get("event") in EVENT_KINDS:
+                    if not isinstance(r, dict):
+                        continue
+                    key = json.dumps(r, sort_keys=True, ensure_ascii=False)
+                    if owner.setdefault(key, p) != p:
+                        continue     # cross-file copy (worktree); count once
+                    if r.get("event"):
                         events += 1
                         continue
                     delegs += 1
@@ -241,6 +284,18 @@ def _selftest():
     assert total_tokens({"input_tokens": 5}) == 5
     assert total_tokens({"input_tokens": "x", "output_tokens": 3}) == 3
     assert total_tokens(None) == 0 and total_tokens("nope") == 0
+    # cross-file dedupe: a worktree copy is dropped, a same-file repeat is kept,
+    # and key order / the _file tag never make two copies look different.
+    a = {"ts": 1, "model": "haiku", "_file": "A"}
+    a_copy = {"model": "haiku", "ts": 1, "_file": "B"}
+    a_again = {"ts": 1, "model": "haiku", "_file": "A"}
+    b = {"ts": 2, "model": "opus", "_file": "B"}
+    kept, dropped = dedupe_across_files([a, a_again, a_copy, b])
+    assert dropped == 1 and kept == [a, a_again, b], (kept, dropped)
+    assert dedupe_across_files([]) == ([], 0)
+    # any "event" key is an event, including kinds this version does not know
+    assert is_event({"event": "session_start"}) and is_event({"event": "x"})
+    assert not is_event({"model": "haiku"}) and not is_event({"event": ""})
     print("selftest OK")
     return 0
 
@@ -269,14 +324,18 @@ def main():
         return 0
 
     all_rows, bad = load(paths)
+    all_rows, copies = dedupe_across_files(all_rows)
     events = [r for r in all_rows if is_event(r)]
     rows = [r for r in all_rows if not is_event(r)]   # delegation records only
     total = len(rows)
     print("=" * 60)
     hdr = f"GEARBOX ROUTING LOG ANALYSIS — {len(paths)} file(s), {total} delegations"
     if events:
-        hdr += f", {len(events)} outcome event(s)"
+        hdr += f", {len(events)} event record(s)"
     print(hdr)
+    if copies:
+        print(f"(dropped {copies} record(s) duplicated across files — "
+              f"worktree copies of one log, counted once)")
     if bad:
         print(f"(skipped {bad} malformed line(s))")
     print("=" * 60)
@@ -330,6 +389,13 @@ def main():
     print(f"  verifier runs               : {verifier}")
     print(f"  T1/T2 work (sonnet+opus)    : {t1t2}")
     print(f"  coverage (verifier / T1+T2) : {pct(verifier, t1t2)}")
+    vmodels = Counter(norm(r.get("model")) or "(empty)" for r in rows
+                      if role_of(r.get("subagent_type")) == "verifier")
+    if vmodels:
+        print("  verifier model             : " + ", ".join(
+            f"{k}:{v}" for k, v in vmodels.most_common()))
+        print("    (the tier table says haiku; a project rule may raise it on")
+        print("     purpose, e.g. sonnet for auth/migration review)")
     print("  NOTE: lower bound — file-modifying T1/T2 *should* be verified;")
     print("  read-only/escalated-without-edits correctly skip the verifier,")
     print("  and the log has no 'files modified' flag to distinguish them.")
@@ -340,15 +406,16 @@ def main():
         all_keys.update(k for k in r.keys() if not k.startswith("_"))
     extra = all_keys - KNOWN_FIELDS
     found_signal = all_keys & SIGNAL_FIELDS
-    print("\n[5] ESCALATION / OUTCOME FIELDS")
-    if found_signal:
-        print(f"  present: {sorted(found_signal)}")
-    else:
-        print("  NONE. The log records the routing DECISION (which agent/model)")
-        print("  but no OUTCOME: no escalation events, no verifier verdict, no")
-        print("  success/fail, no fallback flag, no tier transitions.")
-        print("  -> Gap for 0.2.x: without outcomes the log cannot tell a good")
-        print("     route from a bad one, so it cannot train a learned router.")
+    event_kinds = Counter(r.get("event") for r in events)
+    print("\n[5] OUTCOME SIGNALS PRESENT")
+    print(f"  on delegation records : "
+          f"{sorted(found_signal) if found_signal else 'none'}")
+    print(f"  event records         : " + (", ".join(
+        f"{k}:{v}" for k, v in event_kinds.most_common()) or "none"))
+    if not found_signal and not (event_kinds.keys() & {"verdict", "escalation"}):
+        print("  NO OUTCOMES. The log records the routing DECISION (which")
+        print("  agent/model) but nothing about how it went, so it cannot tell")
+        print("  a good route from a bad one or train a learned router.")
     if extra:
         print(f"  (non-standard fields seen: {sorted(extra)})")
 
@@ -435,6 +502,12 @@ def main():
                         for r in esc)
         detail = ", ".join(f"{k}:{v}" for k, v in trans.most_common())
         print(f"  escalations: {len(esc)} ({detail})")
+        down = sum(1 for r in esc
+                   if TIER_RANK.get(str(r.get("from_tier")).upper(), -1)
+                   > TIER_RANK.get(str(r.get("to_tier")).upper(), 99))
+        if down:
+            print(f"    ! {down} go DOWN a tier — not an escalation; check the "
+                  f"[GEARBOX-ESCALATE from=.. to=..] marker order")
     else:
         print("  escalations: none logged (orchestrator records these manually; "
               "see routing.md rule 3)")
@@ -465,6 +538,21 @@ def main():
             print(f"    {tier:18s} {tok:>12,}  {pct(tok, grand)}")
         print("  NOTE: summed from input+output+cache_creation+cache_read — "
               "tool_response.usage has NO total_tokens key.")
+
+    # [8] sessions — only measurable from 0.2.4 session_start records
+    started = {r.get("session_id") for r in events
+               if r.get("event") == "session_start" and r.get("session_id")}
+    print("\n[8] SESSIONS WITH ROUTING ACTIVE")
+    if started:
+        delegating = {r.get("session_id") for r in rows}
+        idle = started - delegating
+        print(f"  sessions started (0.2.4+) : {len(started)}")
+        print(f"  ...with >=1 delegation    : {len(started) - len(idle)}")
+        print(f"  ...with zero delegations  : {len(idle)}  "
+              f"({pct(len(idle), len(started))})")
+    else:
+        print("  no session_start records — needs 0.2.4+ (written by the "
+              "SessionStart hook)")
 
     # self-check: independent recount must agree, or the report is not trustworthy
     rc_total, rc_models, rc_events = independent_recount(paths)
